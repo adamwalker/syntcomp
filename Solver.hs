@@ -246,8 +246,8 @@ categorizeInputs symbols inputs = (cont, inputs \\ cont)
     isControllable (Is Cont) = True;
     isControllable _         = False;
 
-doIt :: Options -> IO (Either String Bool)
-doIt (Options {..}) = do
+doIt :: GlobalOptions -> String -> IO (Either String Bool)
+doIt (GlobalOptions {..}) filename = do
     contents <- T.readFile filename
     let res = parseOnly aag contents
     case res of 
@@ -262,15 +262,14 @@ doIt (Options {..}) = do
                     return ()
                     solveSafety quiet ops ss initState safeRegion
 
-{-
-doAll :: IO ()
-doAll = do
+doAll :: GlobalOptions -> IO ()
+doAll opts = do
     files <- getDirectoryContents "."
     files <- filterM doesFileExist files
     forM_ (sort files) $ \file -> do
         putStr $ file ++ " ... "
         hFlush stdout
-        res <- doIt (Options file)
+        res <- doIt opts file
         case res of
             Left  err -> putStrLn "Parsing error"
             Right res -> do
@@ -279,15 +278,30 @@ doAll = do
                     putStrLn "Failure"
                 else 
                     putStrLn "Success"
--}
 
-data Options  = Options {
-    filename :: String,
-    quiet    :: Bool
+run :: Options -> IO ()
+run (Options g (Solve string)) = doIt g string >>= print
+run (Options g SolveAll)       = doAll g
+
+data GlobalOptions = GlobalOptions {
+    quiet :: Bool
 }
 
-main = execParser opts >>= doIt >>= print
+data Command = 
+      Solve String
+    | SolveAll 
+
+data Options  = Options {
+    global   :: GlobalOptions,
+    commandO :: Command
+}
+
+main = execParser opts >>= run
     where
-    opts = info (helper <*> optionParser) (fullDesc <> progDesc "Solve the game specified in INPUT" <> O.header "Dumb BDD solver")
-    optionParser = Options <$> argument O.str (metavar "INPUT") <*> flag False True (long "quiet" <> short 'q' <> help "Be quiet")
+    opts            = info (helper <*> topLevelParser) (fullDesc <> progDesc "Solve the game specified in INPUT" <> O.header "Dumb BDD solver")
+    optionParser    = GlobalOptions <$> flag False True (long "quiet" <> short 'q' <> help "Be quiet")
+    solveCommand    = command "solve"    (info (Solve <$> argument O.str (metavar "INPUT")) (progDesc "Solve a file"))
+    solveAllCommand = command "solveAll" (info (pure SolveAll)                              (progDesc "Solve all files in directory"))
+    commandParser   = subparser $ solveCommand <> solveAllCommand
+    topLevelParser  = Options <$> optionParser <*> commandParser
         
