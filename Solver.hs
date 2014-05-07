@@ -202,9 +202,9 @@ compile ops@Ops{..} controllableInputs uncontrollableInputs latches ands safeInd
 
     return $ SynthState cInputCube uInputCube (neg sr) trel initState
 
-safeCpre :: (Show a, Eq a) => Ops s a -> SynthState a -> a -> ST s a
-safeCpre ops@Ops{..} SynthState{..} s = do
-    --unsafeIOToST $ print "*"
+safeCpre :: (Show a, Eq a) => Bool -> Ops s a -> SynthState a -> a -> ST s a
+safeCpre quiet ops@Ops{..} SynthState{..} s = do
+    when (not quiet) $ unsafeIOToST $ print "*"
     scu' <- vectorCompose s trel
 
     scu <- bAnd safeRegion scu'
@@ -224,18 +224,19 @@ fixedPoint ops@Ops{..} start func = do
         True  -> return res
         False -> fixedPoint ops res func 
 
-solveSafety :: (Eq a, Show a) => Ops s a -> SynthState a -> a -> a -> ST s Bool
-solveSafety ops@Ops{..} ss init safeRegion = do
+solveSafety :: (Eq a, Show a) => Bool -> Ops s a -> SynthState a -> a -> a -> ST s Bool
+solveSafety quiet ops@Ops{..} ss init safeRegion = do
     ref btrue
-    res <- fixedPoint ops btrue $ safeCpre ops ss 
+    res <- fixedPoint ops btrue $ safeCpre quiet ops ss 
     init `lEq` res
 
-setupManager :: STDdManager s u -> ST s ()
-setupManager m = void $ do
+setupManager :: Bool -> STDdManager s u -> ST s ()
+setupManager quiet m = void $ do
     cuddAutodynEnable m CuddReorderGroupSift
-    --regStdPreReordHook m
-    --regStdPostReordHook m
-    --cuddEnableReorderingReporting m
+    when (not quiet) $ void $ do
+        regStdPreReordHook m
+        regStdPostReordHook m
+        cuddEnableReorderingReporting m
 
 categorizeInputs :: [Symbol] -> [Int] -> ([Int], [Int])
 categorizeInputs symbols inputs = (cont, inputs \\ cont)
@@ -246,8 +247,8 @@ categorizeInputs symbols inputs = (cont, inputs \\ cont)
     isControllable _         = False;
 
 doIt :: Options -> IO (Either String Bool)
-doIt (Options fname) = do
-    contents <- T.readFile fname
+doIt (Options {..}) = do
+    contents <- T.readFile filename
     let res = parseOnly aag contents
     case res of 
         Left err  -> return $ Left err
@@ -255,12 +256,13 @@ doIt (Options fname) = do
             let (cInputs, uInputs) = categorizeInputs symbols inputs
             Cudd.withManagerIODefaults $ \m -> 
                 stToIO $ do
-                    setupManager m
+                    setupManager quiet m
                     let ops                = constructOps m
                     ss@SynthState{..} <- compile ops cInputs uInputs latches andGates (head outputs)
                     return ()
-                    solveSafety ops ss initState safeRegion
+                    solveSafety quiet ops ss initState safeRegion
 
+{-
 doAll :: IO ()
 doAll = do
     files <- getDirectoryContents "."
@@ -277,13 +279,15 @@ doAll = do
                     putStrLn "Failure"
                 else 
                     putStrLn "Success"
+-}
 
 data Options  = Options {
-    filename :: String
+    filename :: String,
+    quiet    :: Bool
 }
 
 main = execParser opts >>= doIt >>= print
     where
     opts = info (helper <*> optionParser) (fullDesc <> progDesc "Solve the game specified in INPUT" <> O.header "Dumb BDD solver")
-    optionParser = Options <$> argument O.str (metavar "INPUT")
+    optionParser = Options <$> argument O.str (metavar "INPUT") <*> flag False True (long "quiet" <> short 'q' <> help "Be quiet")
         
