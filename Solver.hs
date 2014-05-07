@@ -12,6 +12,8 @@ import Data.List
 import Data.Tuple.All
 import Data.Bits
 import Control.Monad.ST.Unsafe
+import System.Directory
+import System.IO
 
 import Options.Applicative as O
 import Safe
@@ -155,7 +157,7 @@ data SynthState a = SynthState {
 substitutionArray :: Ops s a -> Map Int Int -> Map Int a -> ST s [a]
 substitutionArray Ops{..} latches andGates = do
     sz <- getSize
-    unsafeIOToST $ print sz
+    --unsafeIOToST $ print sz
     mapM func [0..(sz-1)]
     where 
     func idx = case Map.lookup (idx * 2 + 2) latches of
@@ -202,7 +204,7 @@ compile ops@Ops{..} controllableInputs uncontrollableInputs latches ands safeInd
 
 safeCpre :: (Show a, Eq a) => Ops s a -> SynthState a -> a -> ST s a
 safeCpre ops@Ops{..} SynthState{..} s = do
-    unsafeIOToST $ print "*"
+    --unsafeIOToST $ print "*"
     scu' <- vectorCompose s trel
 
     scu <- bAnd safeRegion scu'
@@ -231,9 +233,9 @@ solveSafety ops@Ops{..} ss init safeRegion = do
 setupManager :: STDdManager s u -> ST s ()
 setupManager m = void $ do
     cuddAutodynEnable m CuddReorderGroupSift
-    regStdPreReordHook m
-    regStdPostReordHook m
-    cuddEnableReorderingReporting m
+    --regStdPreReordHook m
+    --regStdPostReordHook m
+    --cuddEnableReorderingReporting m
 
 categorizeInputs :: [Symbol] -> [Int] -> ([Int], [Int])
 categorizeInputs symbols inputs = (cont, inputs \\ cont)
@@ -250,7 +252,6 @@ doIt (Options fname) = do
     case res of 
         Left err  -> return $ Left err
         Right (aag@AAG {..}) -> fmap Right $ do
-            print aag
             let (cInputs, uInputs) = categorizeInputs symbols inputs
             Cudd.withManagerIODefaults $ \m -> 
                 stToIO $ do
@@ -259,6 +260,23 @@ doIt (Options fname) = do
                     ss@SynthState{..} <- compile ops cInputs uInputs latches andGates (head outputs)
                     return ()
                     solveSafety ops ss initState safeRegion
+
+doAll :: IO ()
+doAll = do
+    files <- getDirectoryContents "."
+    files <- filterM doesFileExist files
+    forM_ (sort files) $ \file -> do
+        putStr $ file ++ " ... "
+        hFlush stdout
+        res <- doIt (Options file)
+        case res of
+            Left  err -> putStrLn "Parsing error"
+            Right res -> do
+                let unr = isInfixOf "unr" file
+                if (unr == res) then
+                    putStrLn "Failure"
+                else 
+                    putStrLn "Success"
 
 data Options  = Options {
     filename :: String
