@@ -19,6 +19,8 @@ import Data.Foldable (Foldable)
 import qualified Data.Foldable as F
 import Data.Traversable (Traversable)
 import qualified Data.Traversable as T
+import Control.Monad.Trans.Either
+import Control.Monad.Trans
 
 import Options.Applicative as O
 import Safe
@@ -263,22 +265,20 @@ categorizeInputs symbols inputs = (cont, inputs \\ cont)
     isControllable _         = False
 
 doIt :: GlobalOptions -> String -> IO (Either String Bool)
-doIt (GlobalOptions {..}) filename = do
-    contents <- T.readFile filename
-    let res = parseOnly aag contents
-    case res of 
-        Left err  -> return $ Left err
-        Right (aag@AAG {..}) -> fmap Right $ do
-            let (cInputs, uInputs) = categorizeInputs symbols inputs
-            stToIO $ Cudd.withManagerDefaults $ \m -> do
-                setupManager quiet m
-                let ops                = constructOps m
-                ss@SynthState{..} <- compile ops cInputs uInputs latches andGates (head outputs)
-                return ()
-                res <- solveSafety quiet ops ss initState safeRegion
-                T.mapM (deref ops) ss
-                Cudd.quit m
-                return res
+doIt (GlobalOptions {..}) filename = runEitherT $ do
+    contents    <- lift $ T.readFile filename
+    aag@AAG{..} <- hoistEither $ parseOnly aag contents
+    lift $ do
+        let (cInputs, uInputs) = categorizeInputs symbols inputs
+        stToIO $ Cudd.withManagerDefaults $ \m -> do
+            setupManager quiet m
+            let ops                = constructOps m
+            ss@SynthState{..} <- compile ops cInputs uInputs latches andGates (head outputs)
+            return ()
+            res <- solveSafety quiet ops ss initState safeRegion
+            T.mapM (deref ops) ss
+            Cudd.quit m
+            return res
 
 doAll :: GlobalOptions -> IO ()
 doAll opts = do
