@@ -269,7 +269,7 @@ doIt (GlobalOptions {..}) filename = runEitherT $ do
         let (cInputs, uInputs) = categorizeInputs symbols inputs
         stToIO $ Cudd.withManagerDefaults $ \m -> do
             setupManager quiet m
-            let ops                = constructOps m
+            let ops = constructOps m
             ss@SynthState{..} <- compile ops cInputs uInputs latches andGates (head outputs)
             return ()
             res <- solveSafety quiet ops ss initState safeRegion
