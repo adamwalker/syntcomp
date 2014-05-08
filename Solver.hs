@@ -4,8 +4,6 @@ import Control.Applicative
 import qualified  Data.Text.IO as T
 import Data.Map.Strict (Map)
 import qualified  Data.Map.Strict as Map
-import Data.Set (Set)
-import qualified  Data.Set as Set
 import Control.Monad.ST.Strict
 import Control.Monad
 import Data.List
@@ -16,7 +14,6 @@ import System.Directory
 import System.IO
 import System.CPUTime
 import Data.Foldable (Foldable)
-import qualified Data.Foldable as F
 import Data.Traversable (Traversable)
 import qualified Data.Traversable as T
 import Control.Monad.Trans.Either
