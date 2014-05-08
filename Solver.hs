@@ -205,6 +205,11 @@ compile ops@Ops{..} controllableInputs uncontrollableInputs latches ands safeInd
     let latchMap = Map.fromList latches
     trel <- substitutionArray ops latchMap stab
 
+    mapM ref trel
+    ref sr
+    let func k v = when (even k) (deref v)
+    Map.traverseWithKey func stab
+
     return $ SynthState cInputCube uInputCube (neg sr) trel initState
 
 safeCpre :: (Show a, Eq a) => Bool -> Ops s a -> SynthState a -> a -> ST s a
