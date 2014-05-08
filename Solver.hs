@@ -229,19 +229,22 @@ safeCpre quiet ops@Ops{..} SynthState{..} s = do
     deref su
     return s
 
-fixedPoint :: Eq a => Ops s a -> a -> (a -> ST s a) -> ST s a
-fixedPoint ops@Ops{..} start func = do
+fixedPoint :: Eq a => Ops s a -> a -> a -> (a -> ST s a) -> ST s Bool
+fixedPoint ops@Ops{..} init start func = do
     res <- func start
     deref start
-    case (res == start) of
-        True  -> return res
-        False -> fixedPoint ops res func 
+    win <- init `lEq` res
+    case win of
+        False -> deref res >> return False
+        True  -> 
+            case (res == start) of
+                True  -> deref res >> return True
+                False -> fixedPoint ops init res func 
 
 solveSafety :: (Eq a, Show a) => Bool -> Ops s a -> SynthState a -> a -> a -> ST s Bool
 solveSafety quiet ops@Ops{..} ss init safeRegion = do
     ref btrue
-    res <- fixedPoint ops btrue $ safeCpre quiet ops ss 
-    init `lEq` res
+    fixedPoint ops init btrue $ safeCpre quiet ops ss 
 
 setupManager :: Bool -> STDdManager s u -> ST s ()
 setupManager quiet m = void $ do
