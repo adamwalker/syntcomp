@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings, RecordWildCards #-}
+{-# LANGUAGE OverloadedStrings, RecordWildCards, DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
 
 import Control.Applicative
 import qualified  Data.Text.IO as T
@@ -15,6 +15,10 @@ import Control.Monad.ST.Unsafe
 import System.Directory
 import System.IO
 import System.CPUTime
+import Data.Foldable (Foldable)
+import qualified Data.Foldable as F
+import Data.Traversable (Traversable)
+import qualified Data.Traversable as T
 
 import Options.Applicative as O
 import Safe
@@ -153,7 +157,7 @@ data SynthState a = SynthState {
     safeRegion :: a,
     trel       :: [a],
     initState  :: a
-}
+} deriving (Functor, Foldable, Traversable)
 
 substitutionArray :: Ops s a -> Map Int Int -> Map Int a -> ST s [a]
 substitutionArray Ops{..} latches andGates = do
@@ -261,7 +265,9 @@ doIt (GlobalOptions {..}) filename = do
                     let ops                = constructOps m
                     ss@SynthState{..} <- compile ops cInputs uInputs latches andGates (head outputs)
                     return ()
-                    solveSafety quiet ops ss initState safeRegion
+                    res <- solveSafety quiet ops ss initState safeRegion
+                    T.mapM (deref ops) ss
+                    return res
 
 doAll :: GlobalOptions -> IO ()
 doAll opts = do
