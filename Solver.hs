@@ -259,8 +259,8 @@ categorizeInputs symbols inputs = (cont, inputs \\ cont)
     where
     cont                     = map (inputs !!) theSet
     theSet                   = map idx $ filter (isControllable . typ) symbols
-    isControllable (Is Cont) = True;
-    isControllable _         = False;
+    isControllable (Is Cont) = True
+    isControllable _         = False
 
 doIt :: GlobalOptions -> String -> IO (Either String Bool)
 doIt (GlobalOptions {..}) filename = do
@@ -270,16 +270,15 @@ doIt (GlobalOptions {..}) filename = do
         Left err  -> return $ Left err
         Right (aag@AAG {..}) -> fmap Right $ do
             let (cInputs, uInputs) = categorizeInputs symbols inputs
-            Cudd.withManagerIODefaults $ \m -> 
-                stToIO $ do
-                    setupManager quiet m
-                    let ops                = constructOps m
-                    ss@SynthState{..} <- compile ops cInputs uInputs latches andGates (head outputs)
-                    return ()
-                    res <- solveSafety quiet ops ss initState safeRegion
-                    T.mapM (deref ops) ss
-                    Cudd.quit m
-                    return res
+            stToIO $ Cudd.withManagerDefaults $ \m -> do
+                setupManager quiet m
+                let ops                = constructOps m
+                ss@SynthState{..} <- compile ops cInputs uInputs latches andGates (head outputs)
+                return ()
+                res <- solveSafety quiet ops ss initState safeRegion
+                T.mapM (deref ops) ss
+                Cudd.quit m
+                return res
 
 doAll :: GlobalOptions -> IO ()
 doAll opts = do
