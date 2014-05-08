@@ -184,6 +184,9 @@ compile ops@Ops{..} controllableInputs uncontrollableInputs latches ands safeInd
     --create an entry for each latch 
     latchVars  <- sequence $ replicate (length latches) newVar
 
+    ref btrue
+    ref bfalse
+
     --create the symbol table
     let func idx var = [(idx, var), (idx + 1, neg var)]
         tf   = Map.fromList $ [(0, bfalse), (1, btrue)]
