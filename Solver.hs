@@ -275,6 +275,7 @@ doIt (GlobalOptions {..}) filename = do
                     return ()
                     res <- solveSafety quiet ops ss initState safeRegion
                     T.mapM (deref ops) ss
+                    Cudd.quit m
                     return res
 
 doAll :: GlobalOptions -> IO ()
