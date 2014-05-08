@@ -14,6 +14,7 @@ import Data.Bits
 import Control.Monad.ST.Unsafe
 import System.Directory
 import System.IO
+import System.CPUTime
 
 import Options.Applicative as O
 import Safe
@@ -269,15 +270,19 @@ doAll opts = do
     forM_ (sort files) $ \file -> do
         putStr $ file ++ " ... "
         hFlush stdout
+        start <- getCPUTime
         res <- doIt opts file
+        end <- getCPUTime
+        let elapsedTime :: Double
+            elapsedTime = fromIntegral (end - start) / (10 ** 12)
         case res of
             Left  err -> putStrLn "Parsing error"
             Right res -> do
                 let unr = isInfixOf "unr" file
                 if (unr == res) then
-                    putStrLn "Failure"
+                    putStrLn $ "Failure (" ++ show elapsedTime ++ "s)"
                 else 
-                    putStrLn "Success"
+                    putStrLn $ "Success (" ++ show elapsedTime ++ "s)"
 
 run :: Options -> IO ()
 run (Options g (Solve string)) = doIt g string >>= print
