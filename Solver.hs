@@ -131,6 +131,12 @@ constructOps m = Ops {..}
     btrue         = Cudd.bone m
     bfalse        = Cudd.bzero m
 
+bddSynopsis :: (Show a, Eq a) => Ops s a -> a -> ST s ()
+bddSynopsis Ops{..} x 
+    | x == btrue  = unsafeIOToST $ putStrLn "True"
+    | x == bfalse = unsafeIOToST $ putStrLn "False"
+    | otherwise   = unsafeIOToST $ print x
+
 --Compiling the AIG
 makeAndMap :: [(Int, Int, Int)] -> Map Int (Int, Int)
 makeAndMap = Map.fromList . map func
