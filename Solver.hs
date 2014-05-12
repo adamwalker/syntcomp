@@ -77,7 +77,7 @@ symbol  = iSymbol <|> lSymbol <|> oSymbol
     where
     iSymbol = constructISymbol <$ char 'i' <*> decimal <* ws <*> isCont <*> manyTill anyChar endOfLine
         where 
-        isCont = P.option UCont (Cont <$ string "controllable_") 
+        isCont = P.option UCont (Cont <$ string "controllable") 
         constructISymbol idx cont name = Symbol (Is cont) idx name
     lSymbol = Symbol <$> (Ls <$ char 'l') <*> decimal <* ws <*> manyTill anyChar endOfLine
     oSymbol = Symbol <$> (Os <$ char 'o') <*> decimal <* ws <*> manyTill anyChar endOfLine
