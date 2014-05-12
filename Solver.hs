@@ -82,7 +82,14 @@ symbol  = iSymbol <|> lSymbol <|> oSymbol
     lSymbol = Symbol <$> (Ls <$ char 'l') <*> decimal <* ws <*> manyTill anyChar endOfLine
     oSymbol = Symbol <$> (Os <$ char 'o') <*> decimal <* ws <*> manyTill anyChar endOfLine
 
-aag = AAG <$> header' <*> many1 input <*> many1 latch <*> many1 output <*> many1 andGate <*> many symbol
+aag = do
+    header@Header{..} <- header' 
+    inputs   <- replicateM i input
+    latches  <- replicateM l latch
+    outputs  <- replicateM o output
+    andGates <- replicateM a andGate
+    symbols  <- many symbol
+    return $ AAG {..}
 
 --BDD operations
 data Ops s a = Ops {
