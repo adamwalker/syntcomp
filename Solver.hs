@@ -18,6 +18,8 @@ import Data.Traversable (Traversable)
 import qualified Data.Traversable as T
 import Control.Monad.Trans.Either
 import Control.Monad.Trans
+import Control.Arrow
+import Control.Monad.Trans.State
 
 import Options.Applicative as O
 import Safe
@@ -93,23 +95,28 @@ aag = do
 
 --BDD operations
 data Ops s a = Ops {
-    bAnd          :: a -> a -> ST s a,
-    bOr           :: a -> a -> ST s a,
-    lEq           :: a -> a -> ST s Bool,
-    neg           :: a -> a,
-    vectorCompose :: a -> [a] -> ST s a,
-    newVar        :: ST s a,
-    computeCube   :: [a] -> ST s a,
-    computeCube2  :: [a] -> [Bool] -> ST s a,
-    getSize       :: ST s Int,
-    ithVar        :: Int -> ST s a,
-    bforall       :: a -> a -> ST s a,
-    bexists       :: a -> a -> ST s a,
-    deref         :: a -> ST s (),
-    ref           :: a -> ST s (),
-    btrue         :: a,
-    bfalse        :: a,
-    andAbstract   :: a -> a -> a -> ST s a
+    bAnd           :: a -> a -> ST s a,
+    bOr            :: a -> a -> ST s a,
+    lEq            :: a -> a -> ST s Bool,
+    neg            :: a -> a,
+    vectorCompose  :: a -> [a] -> ST s a,
+    newVar         :: ST s a,
+    computeCube    :: [a] -> ST s a,
+    computeCube2   :: [a] -> [Bool] -> ST s a,
+    getSize        :: ST s Int,
+    ithVar         :: Int -> ST s a,
+    bforall        :: a -> a -> ST s a,
+    bexists        :: a -> a -> ST s a,
+    deref          :: a -> ST s (),
+    ref            :: a -> ST s (),
+    btrue          :: a,
+    bfalse         :: a,
+    andAbstract    :: a -> a -> a -> ST s a,
+    getIdx         :: a -> ST s Int,
+    largestCube    :: a -> ST s (a, Int),
+    makePrime      :: a -> a -> ST s a,
+    supportIndices :: a -> ST s [Int],
+    printMinterm   :: a -> ST s ()
 }
 
 constructOps :: STDdManager s u -> Ops s (DDNode s u)
@@ -132,6 +139,11 @@ constructOps m = Ops {..}
     btrue             = Cudd.bone m
     bfalse            = Cudd.bzero m
     andAbstract c x y = Cudd.andAbstract m x y c
+    getIdx            = Cudd.readIndex
+    largestCube       = Cudd.largestCube m
+    makePrime         = Cudd.makePrime m
+    supportIndices    = Cudd.supportIndices m
+    printMinterm      = Cudd.printMinterm m
 
 bddSynopsis :: (Show a, Eq a) => Ops s a -> a -> ST s ()
 bddSynopsis Ops{..} x 
@@ -140,123 +152,222 @@ bddSynopsis Ops{..} x
     | otherwise   = unsafeIOToST $ print x
 
 --Compiling the AIG
-makeAndMap :: [(Int, Int, Int)] -> Map Int (Int, Int)
-makeAndMap = Map.fromList . map func
-    where func (out, x, y) = (out, (x, y))
+data VarInfo 
+    = CInput
+    | UInput
+    | Latch Int
+    | And Int Int
 
-doAndGates :: Ops s a -> Map Int (Int, Int) -> Map Int a -> Int -> ST s (Map Int a, a)
-doAndGates ops@Ops{..} andGateInputs accum andGate = 
-    case Map.lookup andGate accum of
-        Just x  -> return (accum, x)
+newtype CompileOps s a = CompileOps {
+    getState :: Ops s a -> Map Int VarInfo -> Int -> Int -> StateT (SynthStateDynamic a) (ST s) a
+}
+
+getStateNormal :: Ops s a -> Map Int VarInfo -> Int -> Int -> StateT (SynthStateDynamic a) (ST s) a
+getStateNormal Ops{..} _ idx updIdx = do
+    ss@SynthStateDynamic{..} <- get
+    --Create a new untracked var
+    res                      <- lift newVar
+    let theMap'              =  Map.insert (2 * idx) res $ Map.insert (2 * idx + 1) (neg res) theMap
+    --Update the reverse map
+    idxOfRes                 <- lift $ getIdx res
+    let revMap'              =  Map.insert idxOfRes updIdx revMap
+    --Update the untracked cube
+    untrackedCube'           <- lift $ bAnd untrackedCube res
+    lift $ deref untrackedCube
+    --Update the state
+    put ss{theMap = theMap', revMap = revMap', untrackedCube = untrackedCube'}
+    return res
+
+--Takes a list of state and untracked vars in winning partition
+promoteUntracked :: Bool -> Ops s a -> Map Int VarInfo -> [Int] -> StateT (SynthStateDynamic a) (ST s) ()
+promoteUntracked quiet ops@Ops{..} varInfoMap bddIndices' = do
+    ss@SynthStateDynamic{..} <- get
+
+    --Update the state map
+    let bddIndices = filter (flip Map.member revMap) bddIndices'
+    when (not quiet) $ lift $ unsafeIOToST $ putStrLn $ "Promoting: " ++ show bddIndices
+    let aigIndices =  map (fromJustNote "promoteUntracked" . flip Map.lookup revMap) bddIndices
+    res <- mapM (compile ops (CompileOps getStateNormal) varInfoMap) aigIndices 
+    ss@SynthStateDynamic{..} <- get
+    let stateMap'  =  Map.union stateMap $ Map.fromList $ zip bddIndices res
+
+    --Remove the vars from the untracked cube
+    vars           <- lift $ mapM ithVar bddIndices
+    cb             <- lift $ computeCube vars
+    untrackedCube' <- lift $ bexists cb untrackedCube
+    lift $ deref cb
+    lift $ deref untrackedCube
+
+    --Update the revMap
+    let revMap'    =  Map.filterWithKey (\k v -> notElem k bddIndices) revMap
+
+    --Update the initial state
+    conj           <- lift $ computeCube2 vars (replicate (length vars) False)
+    initialState'  <- lift $ bAnd conj initialState
+    lift $ deref initialState
+    lift $ deref conj
+    
+    --Update the state
+    put ss{stateMap = stateMap', initialState = initialState', revMap = revMap', untrackedCube = untrackedCube'}
+    return ()
+
+iff :: Bool -> a -> a -> a
+iff True  x y = x
+iff False x y = y
+
+--The lazy compilation function
+compile :: Ops s a -> CompileOps s a -> Map Int VarInfo -> Int -> StateT (SynthStateDynamic a) (ST s) a
+compile ops@Ops{..} compileOps@CompileOps{..} varInfoMap idx = do
+    ss@SynthStateDynamic{..} <- get
+    let thisIdx              =  idx `quot` 2
+    case Map.lookup idx theMap of
+        Just x  -> return x
         Nothing -> do
-            let varIdx   =  clearBit andGate 0
-                (x, y)   =  fromJustNote "doAndGates" $ Map.lookup varIdx andGateInputs
-            (accum', x)  <- doAndGates ops andGateInputs accum x
-            (accum'', y) <- doAndGates ops andGateInputs accum' y
-            res          <- bAnd x y
-            let finalMap =  Map.insert varIdx res (Map.insert (varIdx + 1) (neg res) accum'')
-            return (finalMap, fromJustNote "doAndGates2" $ Map.lookup andGate finalMap) 
-
-mapAccumLM :: Monad m => (acc -> x -> m (acc, y)) -> acc -> [x] -> m (acc, [y])
-mapAccumLM _ s []     = return (s, [])
-mapAccumLM f s (x:xs) = do
-    (s1, x')  <- f s x
-    (s2, xs') <- mapAccumLM f s1 xs
-    return    (s2, x' : xs')
+            case Map.lookup (2 * thisIdx) varInfoMap of
+                Nothing          -> lift (unsafeIOToST (putStrLn "error")) >> (return $ error $ "doAndGates: index does not exist: " ++ show (2 * thisIdx))
+                Just CInput      -> do
+                    res         <- lift $ newVar
+                    cInputCube' <- lift $ bAnd cInputCube res
+                    lift $ deref cInputCube
+                    let theMap' =  Map.insert (2 * thisIdx) res (Map.insert (2 * thisIdx + 1) (neg res) theMap)
+                    put ss{theMap = theMap', cInputCube = cInputCube'}
+                    return $ iff (even idx) res (neg res)
+                Just UInput      -> do
+                    res         <- lift $ newVar
+                    uInputCube' <- lift $ bAnd uInputCube res
+                    lift $ deref uInputCube
+                    let theMap' =  Map.insert (2 * thisIdx) res (Map.insert (2 * thisIdx + 1) (neg res) theMap)
+                    put ss{theMap = theMap', uInputCube = uInputCube'}
+                    return $ iff (even idx) res (neg res)
+                Just (Latch nextIdx) -> do
+                    res <- getState ops varInfoMap thisIdx nextIdx
+                    return $ iff (even idx) res (neg res)
+                Just (And x y)   -> do
+                    x   <- compile ops compileOps varInfoMap x
+                    y   <- compile ops compileOps varInfoMap y
+                    ss@SynthStateDynamic{..} <- get
+                    res <- lift $ bAnd x y
+                    let theMap' = Map.insert (2 * thisIdx) res (Map.insert (2 * thisIdx + 1) (neg res) theMap)
+                    put ss{theMap = theMap'}
+                    return $ iff (even idx) res (neg res)
 
 --Synthesis
-data SynthState a = SynthState {
-    cInputCube :: a,
-    uInputCube :: a,
-    safeRegion :: a,
-    trel       :: [a],
-    initState  :: a
+data SynthStateDynamic a = SynthStateDynamic {
+    --Map from AIGER indices to bdds that have been compiled already
+    theMap        :: Map Int a,
+    --Map from untracked BDD indices to update function AIGER indices
+    revMap        :: Map Int Int,
+    --Map from state BDD indices to update functions
+    stateMap      :: Map Int a,
+    untrackedCube :: a,
+    cInputCube    :: a,
+    uInputCube    :: a,
+    initialState  :: a
 } deriving (Functor, Foldable, Traversable)
 
-substitutionArray :: Ops s a -> Map Int Int -> Map Int a -> ST s [a]
-substitutionArray Ops{..} latches andGates = do
+initialDyn :: Ops s a -> SynthStateDynamic a
+initialDyn Ops{..} = SynthStateDynamic {..}
+    where
+    theMap        = Map.fromList [(0, bfalse), (1, btrue)]
+    revMap        = Map.empty
+    stateMap      = Map.empty
+    untrackedCube = btrue
+    cInputCube    = btrue
+    uInputCube    = btrue
+    initialState  = btrue
+
+dumpState :: StateT (SynthStateDynamic a) (ST s) ()
+dumpState = do
+    SynthStateDynamic{..} <- get
+    lift $ unsafeIOToST $ do
+        putStrLn "revMap"
+        print $ Map.keys revMap 
+        putStrLn "stateMap"
+        print $ Map.keys stateMap
+
+substitutionArray :: Ops s a -> SynthStateDynamic a -> ST s [a]
+substitutionArray Ops{..} SynthStateDynamic{..} = do
     sz <- getSize
-    --unsafeIOToST $ print sz
     mapM func [0..(sz-1)]
     where 
-    func idx = case Map.lookup (idx * 2 + 2) latches of
+    func idx = case Map.lookup idx stateMap of
         Nothing    -> ithVar idx
-        Just input -> return $ fromJustNote ("substitutionArray: " ++ show input) $ Map.lookup input andGates
+        Just input -> return input
 
-compile :: Ops s a -> [Int] -> [Int] -> [(Int, Int)] -> [(Int, Int, Int)] -> Int -> ST s (SynthState a)
-compile ops@Ops{..} controllableInputs uncontrollableInputs latches ands safeIndex = do
-    let andGates = map sel1 ands
-        andMap   = makeAndMap ands
-    --create an entry for each controllable input 
-    cInputVars <- sequence $ replicate (length controllableInputs) newVar
-    cInputCube <- computeCube cInputVars
+makeMap :: [Int] -> [Int] -> [(Int, Int)] -> [(Int, Int, Int)] -> Map Int VarInfo
+makeMap controllableInputs uncontrollableInputs latches ands = Map.unions [cInputMap, uInputMap, latchMap, andMap]
+    where
+    cInputMap = Map.fromList $ zip controllableInputs   (repeat CInput)
+    uInputMap = Map.fromList $ zip uncontrollableInputs (repeat UInput)
+    latchMap  = Map.fromList $ map (id *** Latch) latches
+    andMap    = Map.fromList $ map (\(x, y, z) -> (x, And y z)) ands
 
-    --create an entry for each uncontrollable input
-    uInputVars <- sequence $ replicate (length uncontrollableInputs) newVar
-    uInputCube <- computeCube uInputVars
-
-    --create an entry for each latch 
-    latchVars  <- sequence $ replicate (length latches) newVar
-
-    ref btrue
-    ref bfalse
-
-    --create the symbol table
-    let func idx var = [(idx, var), (idx + 1, neg var)]
-        tf   = Map.fromList $ [(0, bfalse), (1, btrue)]
-        mpCI = Map.fromList $ concat $ zipWith func controllableInputs cInputVars
-        mpUI = Map.fromList $ concat $ zipWith func uncontrollableInputs uInputVars
-        mpL  = Map.fromList $ concat $ zipWith func (map fst latches) latchVars
-        im   = Map.unions [tf, mpCI, mpUI, mpL]
-
-    --compile the and gates
-    stab     <- fmap fst $ mapAccumLM (doAndGates ops andMap) im andGates 
-
-    --get the safety condition
-    let sr   = fromJustNote "compile" $ Map.lookup safeIndex stab
-    
-    --construct the initial state
-    initState <- computeCube2 latchVars (replicate (length latchVars) False)
-
-    --construct the transition relation
-    let latchMap = Map.fromList latches
-    trel <- substitutionArray ops latchMap stab
-
-    mapM ref trel
-    ref sr
-    let func k v = when (even k) (deref v)
-    Map.traverseWithKey func stab
-
-    return $ SynthState cInputCube uInputCube (neg sr) trel initState
-
-safeCpre :: (Show a, Eq a) => Bool -> Ops s a -> SynthState a -> a -> ST s a
-safeCpre quiet ops@Ops{..} SynthState{..} s = do
+--Leaves untracked vars in place
+safeCpre' :: (Show a, Eq a) => Bool -> Ops s a -> SynthStateDynamic a -> [a] -> a -> a -> ST s a
+safeCpre' quiet ops@Ops{..} ssd@SynthStateDynamic{..} trel safeRegion s = do
     when (not quiet) $ unsafeIOToST $ print "*"
     scu' <- vectorCompose s trel
 
-    scu <- andAbstract cInputCube safeRegion scu'
+    scu <- andAbstract cInputCube (neg safeRegion) scu'
     deref scu'
 
     s   <- bforall uInputCube scu
     deref scu
     return s
 
-fixedPoint :: Eq a => Ops s a -> a -> a -> (a -> ST s a) -> ST s Bool
-fixedPoint ops@Ops{..} init start func = do
+safeCpre :: (Show a, Eq a) => Bool -> Ops s a -> SynthStateDynamic a -> [a] -> a -> a -> ST s a
+safeCpre quiet ops@Ops{..} ssd@SynthStateDynamic{..} trel safeRegion s = do
+    su  <- safeCpre' quiet ops ssd trel safeRegion s
+    res <- bexists untrackedCube su
+    deref su
+    return res
+
+fixedPoint :: Eq a => Ops s a -> a -> (a -> ST s a) -> ST s a
+fixedPoint ops@Ops{..} start func = do
     res <- func start
     deref start
-    win <- init `lEq` res
-    case win of
-        False -> deref res >> return False
-        True  -> 
-            case (res == start) of
-                True  -> deref res >> return True
-                False -> fixedPoint ops init res func 
+    case (res == start) of
+        True  -> return res
+        False -> fixedPoint ops res func 
 
-solveSafety :: (Eq a, Show a) => Bool -> Ops s a -> SynthState a -> a -> a -> ST s Bool
-solveSafety quiet ops@Ops{..} ss init safeRegion = do
-    ref btrue
-    fixedPoint ops init btrue $ safeCpre quiet ops ss 
+pickUntrackedToPromote :: (Eq a) => Ops s a -> a -> ST s (Maybe [Int])
+pickUntrackedToPromote Ops{..} x = do
+    if x == bfalse then
+        return Nothing
+    else do
+        (lc, _) <- largestCube x
+        prime   <- makePrime lc x
+        deref lc
+        si      <- supportIndices prime
+        deref prime
+        return $ Just si
+
+solveSafety :: (Eq a, Show a) => Map Int VarInfo -> Bool -> Ops s a -> a -> StateT (SynthStateDynamic a) (ST s) Bool
+solveSafety varInfoMap quiet ops@Ops{..} safeRegion = do
+    lift $ ref btrue
+    ssd  <- get
+    func btrue
+    where
+    func mayWin = do
+        ssd@SynthStateDynamic{..} <- get
+        trel                      <- lift $ substitutionArray ops ssd
+        mayWin'                   <- lift $ fixedPoint ops mayWin $ safeCpre quiet ops ssd trel safeRegion
+        ok                        <- lift $ initialState `lEq` mayWin'
+        case ok of
+            False -> return False
+            True  -> do
+                toPromote <- lift $ do
+                    winSU     <- safeCpre' quiet ops ssd trel safeRegion mayWin'
+                    mayLose   <- bAnd mayWin' (neg winSU)
+                    deref winSU
+                    toPromote <- pickUntrackedToPromote ops mayLose
+                    deref mayLose
+                    return toPromote
+                case toPromote of
+                    Just xs -> do
+                        promoteUntracked quiet ops varInfoMap xs 
+                        func mayWin'
+                    Nothing -> return True
 
 setupManager :: Options -> STDdManager s u -> ST s ()
 setupManager Options{..} m = void $ do
@@ -282,10 +393,11 @@ doIt o@Options{..} = runEitherT $ do
         let (cInputs, uInputs) = categorizeInputs symbols inputs
         stToIO $ Cudd.withManagerDefaults $ \m -> do
             setupManager o m
-            let ops = constructOps m
-            ss@SynthState{..} <- compile ops cInputs uInputs latches andGates (head outputs)
-            res <- solveSafety quiet ops ss initState safeRegion
-            T.mapM (deref ops) ss
+            let ops        = constructOps m
+                varInfoMap = makeMap cInputs uInputs latches andGates
+            res <- flip evalStateT (initialDyn ops) $ do
+                safeRegion <- compile ops (CompileOps getStateNormal) varInfoMap (head outputs)
+                solveSafety varInfoMap quiet ops safeRegion
             Cudd.quit m
             return res
 
