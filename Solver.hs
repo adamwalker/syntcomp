@@ -158,26 +158,6 @@ data VarInfo
     | Latch Int
     | And Int Int
 
-newtype CompileOps s a = CompileOps {
-    getState :: Ops s a -> Map Int VarInfo -> Int -> Int -> StateT (SynthStateDynamic a) (ST s) a
-}
-
-getStateNormal :: Ops s a -> Map Int VarInfo -> Int -> Int -> StateT (SynthStateDynamic a) (ST s) a
-getStateNormal Ops{..} _ idx updIdx = do
-    ss@SynthStateDynamic{..} <- get
-    --Create a new untracked var
-    res                      <- lift newVar
-    let theMap'              =  Map.insert (2 * idx) res $ Map.insert (2 * idx + 1) (neg res) theMap
-    --Update the reverse map
-    idxOfRes                 <- lift $ getIdx res
-    let revMap'              =  Map.insert idxOfRes updIdx revMap
-    --Update the untracked cube
-    untrackedCube'           <- lift $ bAnd untrackedCube res
-    lift $ deref untrackedCube
-    --Update the state
-    put ss{theMap = theMap', revMap = revMap', untrackedCube = untrackedCube'}
-    return res
-
 --Takes a list of state and untracked vars in winning partition
 promoteUntracked :: Bool -> Ops s a -> Map Int VarInfo -> [Int] -> StateT (SynthStateDynamic a) (ST s) ()
 promoteUntracked quiet ops@Ops{..} varInfoMap bddIndices' = do
@@ -187,7 +167,7 @@ promoteUntracked quiet ops@Ops{..} varInfoMap bddIndices' = do
     let bddIndices = filter (flip Map.member revMap) bddIndices'
     when (not quiet) $ lift $ unsafeIOToST $ putStrLn $ "Promoting: " ++ show bddIndices
     let aigIndices =  map (fromJustNote "promoteUntracked" . flip Map.lookup revMap) bddIndices
-    res <- mapM (compile ops (CompileOps getStateNormal) varInfoMap) aigIndices 
+    res <- mapM (compile ops  varInfoMap) aigIndices 
     ss@SynthStateDynamic{..} <- get
     let stateMap'  =  Map.union stateMap $ Map.fromList $ zip bddIndices res
 
@@ -216,8 +196,8 @@ iff True  x y = x
 iff False x y = y
 
 --The lazy compilation function
-compile :: Ops s a -> CompileOps s a -> Map Int VarInfo -> Int -> StateT (SynthStateDynamic a) (ST s) a
-compile ops@Ops{..} compileOps@CompileOps{..} varInfoMap idx = do
+compile :: Ops s a -> Map Int VarInfo -> Int -> StateT (SynthStateDynamic a) (ST s) a
+compile ops@Ops{..} varInfoMap idx = do
     ss@SynthStateDynamic{..} <- get
     let thisIdx              =  idx `quot` 2
     case Map.lookup idx theMap of
@@ -239,12 +219,23 @@ compile ops@Ops{..} compileOps@CompileOps{..} varInfoMap idx = do
                     let theMap' =  Map.insert (2 * thisIdx) res (Map.insert (2 * thisIdx + 1) (neg res) theMap)
                     put ss{theMap = theMap', uInputCube = uInputCube'}
                     return $ iff (even idx) res (neg res)
-                Just (Latch nextIdx) -> do
-                    res <- getState ops varInfoMap thisIdx nextIdx
+                Just (Latch updIdx) -> do
+                    ss@SynthStateDynamic{..} <- get
+                    --Create a new untracked var
+                    res                      <- lift newVar
+                    let theMap'              =  Map.insert (2 * thisIdx) res $ Map.insert (2 * thisIdx + 1) (neg res) theMap
+                    --Update the reverse map
+                    idxOfRes                 <- lift $ getIdx res
+                    let revMap'              =  Map.insert idxOfRes updIdx revMap
+                    --Update the untracked cube
+                    untrackedCube'           <- lift $ bAnd untrackedCube res
+                    lift $ deref untrackedCube
+                    --Update the state
+                    put ss{theMap = theMap', revMap = revMap', untrackedCube = untrackedCube'}
                     return $ iff (even idx) res (neg res)
                 Just (And x y)   -> do
-                    x   <- compile ops compileOps varInfoMap x
-                    y   <- compile ops compileOps varInfoMap y
+                    x   <- compile ops varInfoMap x
+                    y   <- compile ops varInfoMap y
                     ss@SynthStateDynamic{..} <- get
                     res <- lift $ bAnd x y
                     let theMap' = Map.insert (2 * thisIdx) res (Map.insert (2 * thisIdx + 1) (neg res) theMap)
@@ -396,7 +387,7 @@ doIt o@Options{..} = runEitherT $ do
             let ops        = constructOps m
                 varInfoMap = makeMap cInputs uInputs latches andGates
             res <- flip evalStateT (initialDyn ops) $ do
-                safeRegion <- compile ops (CompileOps getStateNormal) varInfoMap (head outputs)
+                safeRegion <- compile ops  varInfoMap (head outputs)
                 solveSafety varInfoMap quiet ops safeRegion
             Cudd.quit m
             return res
