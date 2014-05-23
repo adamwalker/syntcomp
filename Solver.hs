@@ -108,28 +108,30 @@ data Ops s a = Ops {
     deref         :: a -> ST s (),
     ref           :: a -> ST s (),
     btrue         :: a,
-    bfalse        :: a
+    bfalse        :: a,
+    andAbstract   :: a -> a -> a -> ST s a
 }
 
 constructOps :: STDdManager s u -> Ops s (DDNode s u)
 constructOps m = Ops {..}
     where
-    bAnd          = Cudd.band m
-    bOr           = Cudd.bor  m
-    lEq           = Cudd.leq  m
-    neg           = Cudd.bnot
-    vectorCompose = Cudd.vectorCompose m
-    newVar        = Cudd.newVar m
-    computeCube   = Cudd.nodesToCube m
-    computeCube2  = Cudd.computeCube m
-    getSize       = Cudd.readSize m
-    ithVar        = Cudd.bvar m
-    bforall       = flip $ Cudd.bforall m
-    bexists       = flip $ Cudd.bexists m
-    deref         = Cudd.deref m
-    ref           = Cudd.ref
-    btrue         = Cudd.bone m
-    bfalse        = Cudd.bzero m
+    bAnd              = Cudd.band m
+    bOr               = Cudd.bor  m
+    lEq               = Cudd.leq  m
+    neg               = Cudd.bnot
+    vectorCompose     = Cudd.vectorCompose m
+    newVar            = Cudd.newVar m
+    computeCube       = Cudd.nodesToCube m
+    computeCube2      = Cudd.computeCube m
+    getSize           = Cudd.readSize m
+    ithVar            = Cudd.bvar m
+    bforall           = flip $ Cudd.bforall m
+    bexists           = flip $ Cudd.bexists m
+    deref             = Cudd.deref m
+    ref               = Cudd.ref
+    btrue             = Cudd.bone m
+    bfalse            = Cudd.bzero m
+    andAbstract c x y = Cudd.andAbstract m x y c
 
 bddSynopsis :: (Show a, Eq a) => Ops s a -> a -> ST s ()
 bddSynopsis Ops{..} x 
@@ -232,13 +234,11 @@ safeCpre quiet ops@Ops{..} SynthState{..} s = do
     when (not quiet) $ unsafeIOToST $ print "*"
     scu' <- vectorCompose s trel
 
-    scu <- bAnd safeRegion scu'
+    scu <- andAbstract cInputCube safeRegion scu'
     deref scu'
 
-    su  <- bexists cInputCube scu
+    s   <- bforall uInputCube scu
     deref scu
-    s   <- bforall uInputCube su
-    deref su
     return s
 
 fixedPoint :: Eq a => Ops s a -> a -> a -> (a -> ST s a) -> ST s Bool
