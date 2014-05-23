@@ -313,13 +313,16 @@ safeCpre quiet ops@Ops{..} ssd@SynthStateDynamic{..} trel safeRegion s = do
     deref su
     return res
 
-fixedPoint :: Eq a => Ops s a -> a -> (a -> ST s a) -> ST s a
-fixedPoint ops@Ops{..} start func = do
+fixedPoint :: Eq a => Ops s a -> a -> a -> (a -> ST s a) -> ST s (Maybe a)
+fixedPoint ops@Ops{..} initialState start func = do
     res <- func start
     deref start
-    case (res == start) of
-        True  -> return res
-        False -> fixedPoint ops res func 
+    win <- initialState `lEq` res
+    case win of
+        False -> deref res >> return Nothing
+        True  -> case (res == start) of
+            True  -> return $ Just res
+            False -> fixedPoint ops initialState res func 
 
 pickUntrackedToPromote :: (Eq a) => Ops s a -> a -> ST s (Maybe [Int])
 pickUntrackedToPromote Ops{..} x = do
@@ -342,11 +345,10 @@ solveSafety varInfoMap quiet ops@Ops{..} safeRegion = do
     func mayWin = do
         ssd@SynthStateDynamic{..} <- get
         trel                      <- lift $ substitutionArray ops ssd
-        mayWin'                   <- lift $ fixedPoint ops mayWin $ safeCpre quiet ops ssd trel safeRegion
-        ok                        <- lift $ initialState `lEq` mayWin'
-        case ok of
-            False -> return False
-            True  -> do
+        mayWin'                   <- lift $ fixedPoint ops initialState mayWin $ safeCpre quiet ops ssd trel safeRegion
+        case mayWin' of
+            Nothing      -> return False
+            Just mayWin' -> do
                 toPromote <- lift $ do
                     winSU     <- safeCpre' quiet ops ssd trel safeRegion mayWin'
                     mayLose   <- bAnd mayWin' (neg winSU)
