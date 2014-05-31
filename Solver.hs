@@ -312,7 +312,12 @@ doAll opts = do
                     putStrLn $ "Success (" ++ show elapsedTime ++ "s)"
 
 run :: Options -> IO ()
-run (Options g (Solve string)) = doIt g string >>= print
+run (Options g (Solve string)) = do
+    res <- doIt g string 
+    case res of
+        Left err    -> putStrLn $ "Error: " ++ err
+        Right True  -> putStrLn "REALIZABLE"
+        Right False -> putStrLn "UNREALIZABLE"
 run (Options g SolveAll)       = doAll g
 
 data GlobalOptions = GlobalOptions {
