@@ -388,9 +388,10 @@ doIt o@Options{..} = runEitherT $ do
             setupManager o m
             let ops        = constructOps m
                 varInfoMap = makeMap cInputs uInputs latches andGates
-            res <- flip evalStateT (initialDyn ops) $ do
+            (res, state) <- flip runStateT (initialDyn ops) $ do
                 safeRegion <- compile ops  varInfoMap (head outputs)
                 solveSafety varInfoMap quiet ops safeRegion
+            unsafeIOToST $ when (not quiet) $ putStrLn $ "Number of untracked vars at termination: " ++ show (length (Map.keys (revMap state)))
             Cudd.quit m
             return res
 
