@@ -18,14 +18,14 @@ import Data.Traversable (Traversable)
 import qualified Data.Traversable as T
 import Control.Monad.Trans.Either
 import Control.Monad.Trans
+import Control.Arrow
 
 import Options.Applicative as O
 import Safe
 import Data.Attoparsec.Text as P
 
-import qualified Cudd.Imperative as Cudd
-import Cudd.Imperative (STDdManager, DDNode)
-import Cudd.Reorder
+import qualified Sylvan as S
+import Sylvan (BDD, BDDVar, BDDMap)
 
 --Parsing
 data Header = Header {
@@ -92,48 +92,90 @@ aag = do
     return $ AAG {..}
 
 --BDD operations
-data Ops s a = Ops {
+data Ops s v m a = Ops {
     bAnd          :: a -> a -> ST s a,
     bOr           :: a -> a -> ST s a,
+    bImp          :: a -> a -> ST s a,
     lEq           :: a -> a -> ST s Bool,
     neg           :: a -> a,
-    vectorCompose :: a -> [a] -> ST s a,
-    newVar        :: ST s a,
-    computeCube   :: [a] -> ST s a,
-    computeCube2  :: [a] -> [Bool] -> ST s a,
-    getSize       :: ST s Int,
+    constructMap  :: [(Int, a)] -> ST s m,
+    vectorCompose :: a -> m -> ST s a,
+    computeVarSet :: [Int] -> ST s v,
+    computeCube   :: [Int] -> [Bool] -> ST s a,
     ithVar        :: Int -> ST s a,
-    bforall       :: a -> a -> ST s a,
-    bexists       :: a -> a -> ST s a,
+    bforall       :: v -> a -> ST s a,
+    bexists       :: v -> a -> ST s a,
     deref         :: a -> ST s (),
     ref           :: a -> ST s (),
     btrue         :: a,
     bfalse        :: a,
-    andAbstract   :: a -> a -> a -> ST s a
+    andAbstract   :: v -> a -> a -> ST s a
 }
 
-constructOps :: STDdManager s u -> Ops s (DDNode s u)
-constructOps m = Ops {..}
+constructOps :: Ops s BDD BDDMap BDD
+constructOps = Ops {..}
     where
-    bAnd              = Cudd.band m
-    bOr               = Cudd.bor  m
-    lEq               = Cudd.leq  m
-    neg               = Cudd.bnot
-    vectorCompose     = Cudd.vectorCompose m
-    newVar            = Cudd.newVar m
-    computeCube       = Cudd.nodesToCube m
-    computeCube2      = Cudd.computeCube m
-    getSize           = Cudd.readSize m
-    ithVar            = Cudd.bvar m
-    bforall           = flip $ Cudd.bforall m
-    bexists           = flip $ Cudd.bexists m
-    deref             = Cudd.deref m
-    ref               = Cudd.ref
-    btrue             = Cudd.bone m
-    bfalse            = Cudd.bzero m
-    andAbstract c x y = Cudd.andAbstract m x y c
+    bAnd x y          = do
+        res <- S.band x y
+        ref res
+        return res
+    bOr x y           = do
+        res <- S.bor x y
+        ref res
+        return res
+    bImp x y          = do
+        res <- S.bimp x y
+        ref res
+        return res
+    lEq x y           = do
+        res <- x `bImp` y
+        deref res
+        return $ res == btrue
+    neg               = S.neg
+    constructMap ps   = do
+        S.gcDisable
+        res <- foldM func S.mapEmpty ps
+        --S.gcEnable
+        return res
+        where
+        func m (v, x) = S.mapAdd m (fromIntegral v) x
+    vectorCompose x m = do
+        res <- S.compose x m
+        ref res
+        return res
+    computeVarSet is  = S.setFromArray (map fromIntegral is)
+    computeCube v p   = S.cube (map fromIntegral v) (map func p)
+        where
+        func False = S.Negative
+        func True  = S.Positive
+    ithVar i          = do
+        res <- S.ithVar $ fromIntegral i
+        ref res
+        return res
+    bforall v x       = do
+        res <- S.forall x v
+        ref res
+        return res
+    bexists v x       = do
+        res <- S.exists x v
+        ref res
+        return res
+    deref             = const $ return () --S.deref 
+    ref               = void . S.ref
+    btrue             = S.sylvanTrue
+    bfalse            = S.sylvanFalse
+    andAbstract v x y = do
+        xy  <- x `bAnd` y
+        res <- bexists v xy
+        deref xy
+        return res
+        {-
+        res <- S.relProd x y c
+        ref res
+        return res
+        -}
 
-bddSynopsis :: (Show a, Eq a) => Ops s a -> a -> ST s ()
+bddSynopsis :: (Show a, Eq a) => Ops s v m a -> a -> ST s ()
 bddSynopsis Ops{..} x 
     | x == btrue  = unsafeIOToST $ putStrLn "True"
     | x == bfalse = unsafeIOToST $ putStrLn "False"
@@ -144,7 +186,7 @@ makeAndMap :: [(Int, Int, Int)] -> Map Int (Int, Int)
 makeAndMap = Map.fromList . map func
     where func (out, x, y) = (out, (x, y))
 
-doAndGates :: Ops s a -> Map Int (Int, Int) -> Map Int a -> Int -> ST s (Map Int a, a)
+doAndGates :: Ops s v m a -> Map Int (Int, Int) -> Map Int a -> Int -> ST s (Map Int a, a)
 doAndGates ops@Ops{..} andGateInputs accum andGate = 
     case Map.lookup andGate accum of
         Just x  -> return (accum, x)
@@ -165,38 +207,40 @@ mapAccumLM f s (x:xs) = do
     return    (s2, x' : xs')
 
 --Synthesis
-data SynthState a = SynthState {
-    cInputCube :: a,
-    uInputCube :: a,
+data SynthState v m a = SynthState {
+    cInputCube :: v,
+    uInputCube :: v,
     safeRegion :: a,
-    trel       :: [a],
+    trel       :: m,
     initState  :: a
 } deriving (Functor, Foldable, Traversable)
 
-substitutionArray :: Ops s a -> Map Int Int -> Map Int a -> ST s [a]
-substitutionArray Ops{..} latches andGates = do
-    sz <- getSize
-    --unsafeIOToST $ print sz
-    mapM func [0..(sz-1)]
-    where 
-    func idx = case Map.lookup (idx * 2 + 2) latches of
-        Nothing    -> ithVar idx
-        Just input -> return $ fromJustNote ("substitutionArray: " ++ show input) $ Map.lookup input andGates
+substitutionArray :: Ops s v m a -> Map Int Int -> Map Int a -> ST s m
+substitutionArray Ops{..} latches andGates = constructMap pairs
+    where
+    ls = Map.toList latches 
+    pairs = map ((\x -> (x `quot` 2) - 1) *** fromJustNote "substitutionArray" . flip Map.lookup andGates) ls
 
-compile :: Ops s a -> [Int] -> [Int] -> [(Int, Int)] -> [(Int, Int, Int)] -> Int -> ST s (SynthState a)
+compile :: Ops s v m a -> [Int] -> [Int] -> [(Int, Int)] -> [(Int, Int, Int)] -> Int -> ST s (SynthState v m a)
 compile ops@Ops{..} controllableInputs uncontrollableInputs latches ands safeIndex = do
     let andGates = map sel1 ands
         andMap   = makeAndMap ands
     --create an entry for each controllable input 
-    cInputVars <- sequence $ replicate (length controllableInputs) newVar
-    cInputCube <- computeCube cInputVars
+    let nextIdx       = length controllableInputs
+        cInputIndices = [0 .. nextIdx - 1]
+    cInputVars <- mapM ithVar cInputIndices
+    cInputCube <- computeVarSet cInputIndices
 
     --create an entry for each uncontrollable input
-    uInputVars <- sequence $ replicate (length uncontrollableInputs) newVar
-    uInputCube <- computeCube uInputVars
+    let nextIdx2      = nextIdx + length uncontrollableInputs
+        uInputIndices = [nextIdx .. nextIdx2 - 1]
+    uInputVars <- mapM ithVar uInputIndices
+    uInputCube <- computeVarSet uInputIndices
 
     --create an entry for each latch 
-    latchVars  <- sequence $ replicate (length latches) newVar
+    let nextIdx3     = nextIdx2 + length latches
+        latchIndices = [nextIdx2 .. nextIdx3 - 1]
+    latchVars  <- mapM ithVar latchIndices
 
     ref btrue
     ref bfalse
@@ -216,20 +260,19 @@ compile ops@Ops{..} controllableInputs uncontrollableInputs latches ands safeInd
     let sr   = fromJustNote "compile" $ Map.lookup safeIndex stab
     
     --construct the initial state
-    initState <- computeCube2 latchVars (replicate (length latchVars) False)
+    initState <- computeCube latchIndices (replicate (length latchVars) False)
 
     --construct the transition relation
     let latchMap = Map.fromList latches
     trel <- substitutionArray ops latchMap stab
 
-    mapM ref trel
     ref sr
     let func k v = when (even k) (deref v)
     Map.traverseWithKey func stab
 
     return $ SynthState cInputCube uInputCube (neg sr) trel initState
 
-safeCpre :: (Show a, Eq a) => Bool -> Ops s a -> SynthState a -> a -> ST s a
+safeCpre :: (Show a, Eq a) => Bool -> Ops s v m a -> SynthState v m a -> a -> ST s a
 safeCpre quiet ops@Ops{..} SynthState{..} s = do
     when (not quiet) $ unsafeIOToST $ print "*"
     scu' <- vectorCompose s trel
@@ -241,7 +284,7 @@ safeCpre quiet ops@Ops{..} SynthState{..} s = do
     deref scu
     return s
 
-fixedPoint :: Eq a => Ops s a -> a -> a -> (a -> ST s a) -> ST s Bool
+fixedPoint :: Eq a => Ops s v m a -> a -> a -> (a -> ST s a) -> ST s Bool
 fixedPoint ops@Ops{..} init start func = do
     res <- func start
     deref start
@@ -253,18 +296,14 @@ fixedPoint ops@Ops{..} init start func = do
                 True  -> deref res >> return True
                 False -> fixedPoint ops init res func 
 
-solveSafety :: (Eq a, Show a) => Bool -> Ops s a -> SynthState a -> a -> a -> ST s Bool
+solveSafety :: (Eq a, Show a) => Bool -> Ops s v m a -> SynthState v m a -> a -> a -> ST s Bool
 solveSafety quiet ops@Ops{..} ss init safeRegion = do
     ref btrue
     fixedPoint ops init btrue $ safeCpre quiet ops ss 
 
-setupManager :: Bool -> STDdManager s u -> ST s ()
-setupManager quiet m = void $ do
-    cuddAutodynEnable m CuddReorderGroupSift
-    when (not quiet) $ void $ do
-        regStdPreReordHook m
-        regStdPostReordHook m
-        cuddEnableReorderingReporting m
+setupManager :: Bool -> ST s ()
+setupManager quiet = void $ do
+    return ()
 
 categorizeInputs :: [Symbol] -> [Int] -> ([Int], [Int])
 categorizeInputs symbols inputs = (cont, inputs \\ cont)
@@ -278,16 +317,18 @@ doIt :: Options -> IO (Either String Bool)
 doIt (Options {..}) = runEitherT $ do
     contents    <- lift $ T.readFile filename
     aag@AAG{..} <- hoistEither $ parseOnly aag contents
-    lift $ do
+    lift $ stToIO $ do
         let (cInputs, uInputs) = categorizeInputs symbols inputs
-        stToIO $ Cudd.withManagerDefaults $ \m -> do
-            setupManager quiet m
-            let ops = constructOps m
-            ss@SynthState{..} <- compile ops cInputs uInputs latches andGates (head outputs)
-            res <- solveSafety quiet ops ss initState safeRegion
-            T.mapM (deref ops) ss
-            Cudd.quit m
-            return res
+        S.laceInit 4 1000000
+        S.laceStartup
+        S.sylvanInit 26 24 4
+        setupManager quiet 
+        S.gcDisable
+        let ops = constructOps 
+        ss@SynthState{..} <- compile ops cInputs uInputs latches andGates (head outputs)
+        res <- solveSafety quiet ops ss initState safeRegion
+        T.mapM (deref ops) ss
+        return res
 
 run :: Options -> IO ()
 run g = do
