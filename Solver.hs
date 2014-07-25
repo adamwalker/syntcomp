@@ -135,7 +135,7 @@ constructOps = Ops {..}
     constructMap ps   = do
         S.gcDisable
         res <- foldM func S.mapEmpty ps
-        --S.gcEnable
+        S.gcEnable
         return res
         where
         func m (v, x) = S.mapAdd m (fromIntegral v) x
@@ -144,7 +144,10 @@ constructOps = Ops {..}
         ref res
         return res
     computeVarSet is  = S.setFromArray (map fromIntegral is)
-    computeCube v p   = S.cube (map fromIntegral v) (map func p)
+    computeCube v p   = do
+        res <- S.cube (map fromIntegral v) (map func p)
+        ref res
+        return res
         where
         func False = S.Negative
         func True  = S.Positive
@@ -160,7 +163,7 @@ constructOps = Ops {..}
         res <- S.exists x v
         ref res
         return res
-    deref             = const $ return () --S.deref 
+    deref             = S.deref 
     ref               = void . S.ref
     btrue             = S.sylvanTrue
     bfalse            = S.sylvanFalse
@@ -323,7 +326,7 @@ doIt (Options {..}) = runEitherT $ do
         S.laceStartup
         S.sylvanInit 26 24 4
         setupManager quiet 
-        S.gcDisable
+        S.gcEnable
         let ops = constructOps 
         ss@SynthState{..} <- compile ops cInputs uInputs latches andGates (head outputs)
         res <- solveSafety quiet ops ss initState safeRegion
