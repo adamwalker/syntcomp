@@ -124,7 +124,7 @@ constructOps m = Ops {..}
     computeCube       = Cudd.nodesToCube m
     computeCube2      = Cudd.computeCube m
     getSize           = Cudd.readSize m
-    ithVar            = Cudd.bvar m
+    ithVar            = Cudd.ithVar m
     bforall           = flip $ Cudd.bforall m
     bexists           = flip $ Cudd.bexists m
     deref             = Cudd.deref m
@@ -258,10 +258,10 @@ solveSafety quiet ops@Ops{..} ss init safeRegion = do
     ref btrue
     fixedPoint ops init btrue $ safeCpre quiet ops ss 
 
-setupManager :: Bool -> STDdManager s u -> ST s ()
-setupManager quiet m = void $ do
-    cuddAutodynEnable m CuddReorderGroupSift
-    when (not quiet) $ void $ do
+setupManager :: Options -> STDdManager s u -> ST s ()
+setupManager Options{..} m = void $ do
+    unless noReord $ cuddAutodynEnable m CuddReorderGroupSift
+    unless quiet   $ void $ do
         regStdPreReordHook m
         regStdPostReordHook m
         cuddEnableReorderingReporting m
@@ -275,13 +275,13 @@ categorizeInputs symbols inputs = (cont, inputs \\ cont)
     isControllable _         = False
 
 doIt :: Options -> IO (Either String Bool)
-doIt (Options {..}) = runEitherT $ do
+doIt o@Options{..} = runEitherT $ do
     contents    <- lift $ T.readFile filename
     aag@AAG{..} <- hoistEither $ parseOnly aag contents
     lift $ do
         let (cInputs, uInputs) = categorizeInputs symbols inputs
         stToIO $ Cudd.withManagerDefaults $ \m -> do
-            setupManager quiet m
+            setupManager o m
             let ops = constructOps m
             ss@SynthState{..} <- compile ops cInputs uInputs latches andGates (head outputs)
             res <- solveSafety quiet ops ss initState safeRegion
@@ -299,11 +299,14 @@ run g = do
 
 data Options = Options {
     quiet    :: Bool,
+    noReord  :: Bool,
     filename :: String
 }
 
 main = execParser opts >>= run
     where
     opts   = info (helper <*> parser) (fullDesc <> progDesc "Solve the game specified in INPUT" <> O.header "Simple BDD solver")
-    parser = Options <$> flag False True (long "quiet" <> short 'q' <> help "Be quiet")
+    parser = Options <$> flag False True (long "quiet"   <> short 'q' <> help "Be quiet")
+                     <*> flag False True (long "noreord" <> short 'n' <> help "Disable reordering")
                      <*> argument O.str (metavar "INPUT")
+
