@@ -322,7 +322,7 @@ doIt (Options {..}) = runEitherT $ do
     aag@AAG{..} <- hoistEither $ parseOnly aag contents
     lift $ stToIO $ do
         let (cInputs, uInputs) = categorizeInputs symbols inputs
-        S.laceInit 4 1000000
+        S.laceInit threads 1000000
         S.laceStartup
         S.sylvanInit 26 24 4
         setupManager quiet 
@@ -343,6 +343,7 @@ run g = do
 
 data Options = Options {
     quiet    :: Bool,
+    threads  :: Int,
     filename :: String
 }
 
@@ -350,4 +351,6 @@ main = execParser opts >>= run
     where
     opts   = info (helper <*> parser) (fullDesc <> progDesc "Solve the game specified in INPUT" <> O.header "Simple BDD solver")
     parser = Options <$> flag False True (long "quiet" <> short 'q' <> help "Be quiet")
+                     <*> O.option (long "threads" <> short 'n' <> metavar "N" <> help "Number of threads" <> value 4)
                      <*> argument O.str (metavar "INPUT")
+
