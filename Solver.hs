@@ -274,8 +274,8 @@ categorizeInputs symbols inputs = (cont, inputs \\ cont)
     isControllable (Is Cont) = True
     isControllable _         = False
 
-doIt :: GlobalOptions -> String -> IO (Either String Bool)
-doIt (GlobalOptions {..}) filename = runEitherT $ do
+doIt :: Options -> IO (Either String Bool)
+doIt (Options {..}) = runEitherT $ do
     contents    <- lift $ T.readFile filename
     aag@AAG{..} <- hoistEither $ parseOnly aag contents
     lift $ do
@@ -284,61 +284,26 @@ doIt (GlobalOptions {..}) filename = runEitherT $ do
             setupManager quiet m
             let ops = constructOps m
             ss@SynthState{..} <- compile ops cInputs uInputs latches andGates (head outputs)
-            return ()
             res <- solveSafety quiet ops ss initState safeRegion
             T.mapM (deref ops) ss
             Cudd.quit m
             return res
 
-doAll :: GlobalOptions -> IO ()
-doAll opts = do
-    files <- getDirectoryContents "."
-    files <- filterM doesFileExist files
-    forM_ (sort files) $ \file -> do
-        putStr $ file ++ " ... "
-        hFlush stdout
-        start <- getCPUTime
-        res <- doIt opts file
-        end <- getCPUTime
-        let elapsedTime :: Double
-            elapsedTime = fromIntegral (end - start) / (10 ** 12)
-        case res of
-            Left  err -> putStrLn "Parsing error"
-            Right res -> do
-                let unr = isInfixOf "unr" file
-                if (unr == res) then
-                    putStrLn $ "Failure (" ++ show elapsedTime ++ "s)"
-                else 
-                    putStrLn $ "Success (" ++ show elapsedTime ++ "s)"
-
 run :: Options -> IO ()
-run (Options g (Solve string)) = do
-    res <- doIt g string 
+run g = do
+    res <- doIt g 
     case res of
         Left err    -> putStrLn $ "Error: " ++ err
         Right True  -> putStrLn "REALIZABLE"
         Right False -> putStrLn "UNREALIZABLE"
-run (Options g SolveAll)       = doAll g
 
-data GlobalOptions = GlobalOptions {
-    quiet :: Bool
-}
-
-data Command = 
-      Solve String
-    | SolveAll 
-
-data Options  = Options {
-    global   :: GlobalOptions,
-    commandO :: Command
+data Options = Options {
+    quiet    :: Bool,
+    filename :: String
 }
 
 main = execParser opts >>= run
     where
-    opts            = info (helper <*> topLevelParser) (fullDesc <> progDesc "Solve the game specified in INPUT" <> O.header "Dumb BDD solver")
-    optionParser    = GlobalOptions <$> flag False True (long "quiet" <> short 'q' <> help "Be quiet")
-    solveCommand    = command "solve"    (info (Solve <$> argument O.str (metavar "INPUT")) (progDesc "Solve a file"))
-    solveAllCommand = command "solveAll" (info (pure SolveAll)                              (progDesc "Solve all files in directory"))
-    commandParser   = subparser $ solveCommand <> solveAllCommand
-    topLevelParser  = Options <$> optionParser <*> commandParser
-        
+    opts   = info (helper <*> parser) (fullDesc <> progDesc "Solve the game specified in INPUT" <> O.header "Simple BDD solver")
+    parser = Options <$> flag False True (long "quiet" <> short 'q' <> help "Be quiet")
+                     <*> argument O.str (metavar "INPUT")
