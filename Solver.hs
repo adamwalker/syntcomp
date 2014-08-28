@@ -241,22 +241,22 @@ safeCpre quiet ops@Ops{..} SynthState{..} s = do
     deref scu
     return s
 
-fixedPoint :: Eq a => Ops s a -> a -> a -> (a -> ST s a) -> ST s Bool
-fixedPoint ops@Ops{..} init start func = do
+fixedPoint :: Eq a => Int -> Ops s a -> a -> a -> (a -> ST s a) -> ST s (Bool, Int)
+fixedPoint cnt ops@Ops{..} init start func = do
     res <- func start
     deref start
     win <- init `lEq` res
     case win of
-        False -> deref res >> return False
+        False -> deref res >> return (False, cnt)
         True  -> 
             case (res == start) of
-                True  -> deref res >> return True
-                False -> fixedPoint ops init res func 
+                True  -> deref res >> return (True, cnt)
+                False -> fixedPoint (cnt + 1) ops init res func 
 
-solveSafety :: (Eq a, Show a) => Bool -> Ops s a -> SynthState a -> a -> a -> ST s Bool
+solveSafety :: (Eq a, Show a) => Bool -> Ops s a -> SynthState a -> a -> a -> ST s (Bool, Int)
 solveSafety quiet ops@Ops{..} ss init safeRegion = do
     ref btrue
-    fixedPoint ops init btrue $ safeCpre quiet ops ss 
+    fixedPoint 0 ops init btrue $ safeCpre quiet ops ss 
 
 setupManager :: Options -> STDdManager s u -> ST s ()
 setupManager Options{..} m = void $ do
@@ -274,7 +274,7 @@ categorizeInputs symbols inputs = (cont, inputs \\ cont)
     isControllable (Is Cont) = True
     isControllable _         = False
 
-doIt :: Options -> IO (Either String Bool)
+doIt :: Options -> IO (Either String (Bool, Int))
 doIt o@Options{..} = runEitherT $ do
     contents    <- lift $ T.readFile filename
     aag@AAG{..} <- hoistEither $ parseOnly aag contents
@@ -294,8 +294,8 @@ run g = do
     res <- doIt g 
     case res of
         Left err    -> putStrLn $ "Error: " ++ err
-        Right True  -> putStrLn "REALIZABLE"
-        Right False -> putStrLn "UNREALIZABLE"
+        Right (True, cnt)  -> putStrLn $  "REALIZABLE: " ++ show cnt ++ " iterations"
+        Right (False, cnt) -> putStrLn $ "UNREALIZABLE" ++ show cnt ++ " iterations"
 
 data Options = Options {
     quiet    :: Bool,
