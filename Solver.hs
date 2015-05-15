@@ -24,7 +24,7 @@ import Safe
 import Data.Attoparsec.Text as P
 
 import qualified Cudd.Imperative as Cudd
-import Cudd.Imperative (STDdManager, DDNode)
+import Cudd.Imperative (DDManager, DDNode)
 import Cudd.Reorder
 
 --Parsing
@@ -112,25 +112,25 @@ data Ops s a = Ops {
     andAbstract   :: a -> a -> a -> ST s a
 }
 
-constructOps :: STDdManager s u -> Ops s (DDNode s u)
+constructOps :: DDManager s u -> Ops s (DDNode s u)
 constructOps m = Ops {..}
     where
-    bAnd              = Cudd.band m
-    bOr               = Cudd.bor  m
-    lEq               = Cudd.leq  m
-    neg               = Cudd.bnot
+    bAnd              = Cudd.bAnd m
+    bOr               = Cudd.bOr  m
+    lEq               = Cudd.lEq  m
+    neg               = Cudd.bNot
     vectorCompose     = Cudd.vectorCompose m
     newVar            = Cudd.newVar m
     computeCube       = Cudd.nodesToCube m
     computeCube2      = Cudd.computeCube m
     getSize           = Cudd.readSize m
     ithVar            = Cudd.ithVar m
-    bforall           = flip $ Cudd.bforall m
-    bexists           = flip $ Cudd.bexists m
+    bforall           = flip $ Cudd.bForall m
+    bexists           = flip $ Cudd.bExists m
     deref             = Cudd.deref m
     ref               = Cudd.ref
-    btrue             = Cudd.bone m
-    bfalse            = Cudd.bzero m
+    btrue             = Cudd.bOne m
+    bfalse            = Cudd.bZero m
     andAbstract c x y = Cudd.andAbstract m x y c
 
 bddSynopsis :: (Show a, Eq a) => Ops s a -> a -> ST s ()
@@ -258,7 +258,7 @@ solveSafety quiet ops@Ops{..} ss init safeRegion = do
     ref btrue
     fixedPoint ops init btrue $ safeCpre quiet ops ss 
 
-setupManager :: Options -> STDdManager s u -> ST s ()
+setupManager :: Options -> DDManager s u -> ST s ()
 setupManager Options{..} m = void $ do
     unless noReord $ cuddAutodynEnable m CuddReorderGroupSift
     unless quiet   $ void $ do
