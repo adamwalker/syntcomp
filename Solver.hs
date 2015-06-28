@@ -112,8 +112,8 @@ data Ops s a = Ops {
     andAbstract   :: a -> a -> a -> ST s a
 }
 
-constructOps :: DDManager s u -> Ops s (DDNode s u)
-constructOps m = Ops {..}
+constructOps :: Options -> DDManager s u -> Ops s (DDNode s u)
+constructOps Options{..} m = Ops {..}
     where
     bAnd              = Cudd.bAnd m
     bOr               = Cudd.bOr  m
@@ -127,7 +127,7 @@ constructOps m = Ops {..}
     ithVar            = Cudd.ithVar m
     bforall           = flip $ Cudd.bForall m
     bexists           = flip $ Cudd.bExists m
-    deref             = Cudd.deref m
+    deref             = if noDeref then (const $ return ()) else Cudd.deref m
     ref               = Cudd.ref
     btrue             = Cudd.bOne m
     bfalse            = Cudd.bZero m
@@ -229,13 +229,21 @@ compile ops@Ops{..} controllableInputs uncontrollableInputs latches ands safeInd
 
     return $ SynthState cInputCube uInputCube (neg sr) trel initState
 
-safeCpre :: (Show a, Eq a) => Bool -> Ops s a -> SynthState a -> a -> ST s a
-safeCpre quiet ops@Ops{..} SynthState{..} s = do
+safeCpre :: (Show a, Eq a) => Options -> Ops s a -> SynthState a -> a -> ST s a
+safeCpre Options{..} ops@Ops{..} SynthState{..} s = do
     when (not quiet) $ unsafeIOToST $ print "*"
     scu' <- vectorCompose s trel
 
-    scu <- andAbstract cInputCube safeRegion scu'
-    deref scu'
+    scu <- if noSimult then do
+            var <- bAnd safeRegion scu'
+            deref scu'
+            scu <- bexists cInputCube var
+            deref var
+            return scu
+        else do
+            scu <- andAbstract cInputCube safeRegion scu'
+            deref scu'
+            return scu
 
     s   <- bforall uInputCube scu
     deref scu
@@ -253,10 +261,24 @@ fixedPoint ops@Ops{..} init start func = do
                 True  -> deref res >> return True
                 False -> fixedPoint ops init res func 
 
-solveSafety :: (Eq a, Show a) => Bool -> Ops s a -> SynthState a -> a -> a -> ST s Bool
-solveSafety quiet ops@Ops{..} ss init safeRegion = do
+fixedPointNoEarly :: Eq a => Ops s a -> a -> a -> (a -> ST s a) -> ST s Bool
+fixedPointNoEarly ops@Ops{..} init start func = do
+    res <- f start
+    win <- init `lEq` res
+    deref res
+    return win
+    where 
+    f start = do
+        res <- func start
+        deref start
+        case res == start of
+            True  -> return res
+            False -> f res
+
+solveSafety :: (Eq a, Show a) => Options -> Ops s a -> SynthState a -> a -> a -> ST s Bool
+solveSafety options@Options{..} ops@Ops{..} ss init safeRegion = do
     ref btrue
-    fixedPoint ops init btrue $ safeCpre quiet ops ss 
+    if noEarly then (fixedPointNoEarly ops init btrue $ safeCpre options ops ss) else (fixedPoint ops init btrue $ safeCpre options ops ss)
 
 setupManager :: Options -> DDManager s u -> ST s ()
 setupManager Options{..} m = void $ do
@@ -282,9 +304,9 @@ doIt o@Options{..} = runEitherT $ do
         let (cInputs, uInputs) = categorizeInputs symbols inputs
         stToIO $ Cudd.withManagerDefaults $ \m -> do
             setupManager o m
-            let ops = constructOps m
+            let ops = constructOps o m
             ss@SynthState{..} <- compile ops cInputs uInputs latches andGates (head outputs)
-            res <- solveSafety quiet ops ss initState safeRegion
+            res <- solveSafety o ops ss initState safeRegion
             T.mapM (deref ops) ss
             Cudd.quit m
             return res
@@ -300,13 +322,19 @@ run g = do
 data Options = Options {
     quiet    :: Bool,
     noReord  :: Bool,
+    noDeref  :: Bool,
+    noSimult :: Bool,
+    noEarly  :: Bool,
     filename :: String
 }
 
 main = execParser opts >>= run
     where
     opts   = info (helper <*> parser) (fullDesc <> progDesc "Solve the game specified in INPUT" <> O.header "Simple BDD solver")
-    parser = Options <$> flag False True (long "quiet"   <> short 'q' <> help "Be quiet")
-                     <*> flag False True (long "noreord" <> short 'n' <> help "Disable reordering")
+    parser = Options <$> flag False True (long "quiet"              <> short 'q' <> help "Be quiet")
+                     <*> flag False True (long "noreord"            <> short 'r' <> help "Disable reordering")
+                     <*> flag False True (long "noderef"            <> short 'd' <> help "Disable dereferencing")
+                     <*> flag False True (long "nosimult"           <> short 's' <> help "Disable simultaneous conjunction and quantification")
+                     <*> flag False True (long "noearlytermination" <> short 't' <> help "Disable early termination")
                      <*> argument O.str (metavar "INPUT")
 
