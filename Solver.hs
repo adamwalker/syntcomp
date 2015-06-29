@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings, RecordWildCards, DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
+{-# LANGUAGE OverloadedStrings, RecordWildCards, DeriveFunctor, DeriveFoldable, DeriveTraversable, RankNTypes #-}
 
 import Control.Applicative
 import qualified  Data.Text.IO as T
@@ -95,6 +95,7 @@ aag = do
 data Ops s a = Ops {
     bAnd          :: a -> a -> ST s a,
     bOr           :: a -> a -> ST s a,
+    bXNor         :: a -> a -> ST s a,
     lEq           :: a -> a -> ST s Bool,
     neg           :: a -> a,
     vectorCompose :: a -> [a] -> ST s a,
@@ -109,7 +110,9 @@ data Ops s a = Ops {
     ref           :: a -> ST s (),
     btrue         :: a,
     bfalse        :: a,
-    andAbstract   :: a -> a -> a -> ST s a
+    andAbstract   :: a -> a -> a -> ST s a,
+    setVarMap     :: [a] -> [a] -> ST s (),
+    varMap        :: a -> ST s a
 }
 
 constructOps :: Options -> DDManager s u -> Ops s (DDNode s u)
@@ -117,6 +120,7 @@ constructOps Options{..} m = Ops {..}
     where
     bAnd              = Cudd.bAnd m
     bOr               = Cudd.bOr  m
+    bXNor             = Cudd.bXnor m
     lEq               = Cudd.lEq  m
     neg               = Cudd.bNot
     vectorCompose     = Cudd.vectorCompose m
@@ -132,6 +136,8 @@ constructOps Options{..} m = Ops {..}
     btrue             = Cudd.bOne m
     bfalse            = Cudd.bZero m
     andAbstract c x y = Cudd.andAbstract m x y c
+    setVarMap         = Cudd.setVarMap m
+    varMap            = Cudd.varMap m
 
 bddSynopsis :: (Show a, Eq a) => Ops s a -> a -> ST s ()
 bddSynopsis Ops{..} x 
@@ -165,13 +171,13 @@ mapAccumLM f s (x:xs) = do
     return    (s2, x' : xs')
 
 --Synthesis
-data SynthState a = SynthState {
+data SynthState s a = SynthState {
     cInputCube :: a,
     uInputCube :: a,
     safeRegion :: a,
-    trel       :: [a],
+    subNext    :: a -> ST s a,
     initState  :: a
-} deriving (Functor, Foldable, Traversable)
+} 
 
 substitutionArray :: Ops s a -> Map Int Int -> Map Int a -> ST s [a]
 substitutionArray Ops{..} latches andGates = do
@@ -183,7 +189,7 @@ substitutionArray Ops{..} latches andGates = do
         Nothing    -> ithVar idx
         Just input -> return $ fromJustNote ("substitutionArray: " ++ show input) $ Map.lookup input andGates
 
-compile :: Ops s a -> [Int] -> [Int] -> [(Int, Int)] -> [(Int, Int, Int)] -> Int -> ST s (SynthState a)
+compile :: Ops s a -> [Int] -> [Int] -> [(Int, Int)] -> [(Int, Int, Int)] -> Int -> ST s (SynthState s a)
 compile ops@Ops{..} controllableInputs uncontrollableInputs latches ands safeIndex = do
     let andGates = map sel1 ands
         andMap   = makeAndMap ands
@@ -227,12 +233,88 @@ compile ops@Ops{..} controllableInputs uncontrollableInputs latches ands safeInd
     let func k v = when (even k) (deref v)
     Map.traverseWithKey func stab
 
-    return $ SynthState cInputCube uInputCube (neg sr) trel initState
+    let subNext s = vectorCompose s trel
 
-safeCpre :: (Show a, Eq a) => Options -> Ops s a -> SynthState a -> a -> ST s a
+    return $ SynthState cInputCube uInputCube (neg sr) subNext initState
+
+conj :: Ops s a -> [a] -> ST s a
+conj Ops{..} xs = do
+    ref btrue
+    foldM func btrue xs
+    where
+    func accum y = do
+        res <- bAnd accum y
+        deref accum
+        return res
+
+compileMonolithic :: Ops s a -> [Int] -> [Int] -> [(Int, Int)] -> [(Int, Int, Int)] -> Int -> ST s (SynthState s a)
+compileMonolithic ops@Ops{..} controllableInputs uncontrollableInputs latches ands safeIndex = do
+    let andGates = map sel1 ands
+        andMap   = makeAndMap ands
+    --create an entry for each controllable input 
+    cInputVars <- sequence $ replicate (length controllableInputs) newVar
+    cInputCube <- computeCube cInputVars
+
+    --create an entry for each uncontrollable input
+    uInputVars <- sequence $ replicate (length uncontrollableInputs) newVar
+    uInputCube <- computeCube uInputVars
+
+    --create an entry for each latch 
+    latchVars  <- sequence $ replicate (length latches) ((,) <$> newVar <*> newVar)
+
+    ref btrue
+    ref bfalse
+
+    --create the symbol table
+    let func idx var = [(idx, var), (idx + 1, neg var)]
+        tf   = Map.fromList $ [(0, bfalse), (1, btrue)]
+        mpCI = Map.fromList $ concat $ zipWith func controllableInputs cInputVars
+        mpUI = Map.fromList $ concat $ zipWith func uncontrollableInputs uInputVars
+        mpL  = Map.fromList $ concat $ zipWith func (map fst latches) (map fst latchVars)
+        im   = Map.unions [tf, mpCI, mpUI, mpL]
+
+    --compile the and gates
+    stab     <- fmap fst $ mapAccumLM (doAndGates ops andMap) im andGates 
+
+    --get the safety condition
+    let sr   = fromJustNote "compile" $ Map.lookup safeIndex stab
+    
+    --construct the initial state
+    initState <- computeCube2 (map fst latchVars) (replicate (length latchVars) False)
+
+    --set the variable map
+    setVarMap (map fst latchVars) (map snd latchVars)
+
+    --calculate the next cube
+    nextCube <- computeCube (map snd latchVars)
+
+    ref sr
+    --let func k v = when (even k) (deref v)
+    --Map.traverseWithKey func stab
+
+    --construct the transition relation
+    let func (latchIndex, latchAssign) (latchCurrentNode, latchNextNode) = do
+            let assignedTo = fromJustNote "compileMonolithic" $ Map.lookup latchAssign stab
+            bXNor latchNextNode assignedTo
+
+    trel <- zipWithM func latches latchVars
+    trans <- conj ops trel
+    mapM deref trel
+
+    let subNext s = do
+            s' <- varMap s 
+            c  <- bOr (neg trans) s'
+            deref s'
+            r  <- bforall nextCube c
+            deref c
+            return r
+
+    return $ SynthState cInputCube uInputCube (neg sr) subNext initState
+
+safeCpre :: (Show a, Eq a) => Options -> Ops s a -> SynthState s a -> a -> ST s a
 safeCpre Options{..} ops@Ops{..} SynthState{..} s = do
     when (not quiet) $ unsafeIOToST $ print "*"
-    scu' <- vectorCompose s trel
+    scu' <- subNext s
 
     scu <- if noSimult then do
             var <- bAnd safeRegion scu'
@@ -275,7 +357,7 @@ fixedPointNoEarly ops@Ops{..} init start func = do
             True  -> return res
             False -> f res
 
-solveSafety :: (Eq a, Show a) => Options -> Ops s a -> SynthState a -> a -> a -> ST s Bool
+solveSafety :: (Eq a, Show a) => Options -> Ops s a -> SynthState s a -> a -> a -> ST s Bool
 solveSafety options@Options{..} ops@Ops{..} ss init safeRegion = do
     ref btrue
     if noEarly then (fixedPointNoEarly ops init btrue $ safeCpre options ops ss) else (fixedPoint ops init btrue $ safeCpre options ops ss)
@@ -305,9 +387,9 @@ doIt o@Options{..} = runEitherT $ do
         stToIO $ Cudd.withManagerDefaults $ \m -> do
             setupManager o m
             let ops = constructOps o m
-            ss@SynthState{..} <- compile ops cInputs uInputs latches andGates (head outputs)
+            ss@SynthState{..} <- (if noPart then compileMonolithic else compile) ops cInputs uInputs latches andGates (head outputs)
             res <- solveSafety o ops ss initState safeRegion
-            T.mapM (deref ops) ss
+            --T.mapM (deref ops) ss
             Cudd.quit m
             return res
 
@@ -325,6 +407,7 @@ data Options = Options {
     noDeref  :: Bool,
     noSimult :: Bool,
     noEarly  :: Bool,
+    noPart   :: Bool,
     filename :: String
 }
 
@@ -336,5 +419,6 @@ main = execParser opts >>= run
                      <*> flag False True (long "noderef"            <> short 'd' <> help "Disable dereferencing")
                      <*> flag False True (long "nosimult"           <> short 's' <> help "Disable simultaneous conjunction and quantification")
                      <*> flag False True (long "noearlytermination" <> short 't' <> help "Disable early termination")
+                     <*> flag False True (long "noPartitioned"      <> short 'p' <> help "Disable conjunctive partitioning of transition relations")
                      <*> argument O.str (metavar "INPUT")
 
