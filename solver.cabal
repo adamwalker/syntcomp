@@ -9,7 +9,7 @@ license:             BSD3
 license-file:        LICENSE
 author:              Adam Walker
 maintainer:          adamwalker10@gmail.com
-copyright:           2014 Adam Walker
+copyright:           2016 Adam Walker
 -- category:            
 build-type:          Simple
 -- extra-source-files:  
@@ -17,10 +17,20 @@ cabal-version:       >=1.10
 
 executable solver
   main-is:             Solver.hs
-  other-modules:       AAG
+  other-modules:       AAG, BDD
   -- other-modules:       
   other-extensions:    OverloadedStrings, RecordWildCards, DeriveFunctor, DeriveFoldable, DeriveTraversable
   build-depends:       base >=4.7 && <4.9, text >=1.1 && <1.3, containers >=0.5 && <0.6, tuple >=0.2 && <0.4, directory >=1.2 && <1.3, either >=4.1 && <4.5, mtl >=2.1 && <2.3, optparse-applicative >=0.8 && <0.13, safe >=0.3 && <0.4, attoparsec >=0.11 && <0.14, cudd >=0.1 && <0.2
+  -- hs-source-dirs:      
+  default-language:    Haskell2010
+  ghc-options:         -O2
+
+executable absSolver
+  main-is:             AbsSolver.hs
+  other-modules:       AAG, BDD
+  -- other-modules:       
+  other-extensions:    OverloadedStrings, RecordWildCards, DeriveFunctor, DeriveFoldable, DeriveTraversable
+  build-depends:       base >=4.7 && <4.9, text >=1.1 && <1.3, containers >=0.5 && <0.6, tuple >=0.2 && <0.4, directory >=1.2 && <1.3, either >=4.1 && <4.5, mtl >=2.1 && <2.3, optparse-applicative >=0.8 && <0.13, safe >=0.3 && <0.4, attoparsec >=0.11 && <0.14, cudd >=0.1 && <0.2, transformers
   -- hs-source-dirs:      
   default-language:    Haskell2010
   ghc-options:         -O2
