@@ -102,7 +102,7 @@ compile ops@Ops{..} controllableInputs uncontrollableInputs latches ands safeInd
         im   = Map.unions [tf, mpCI, mpUI, mpL]
 
     --compile the and gates
-    stab     <- fmap fst $ mapAccumLM (doAndGates ops andMap) im andGates 
+    stab     <- fst <$> mapAccumLM (doAndGates ops andMap) im andGates 
 
     --get the safety condition
     let sr   = fromJustNote "compile" $ Map.lookup safeIndex stab
@@ -114,7 +114,7 @@ compile ops@Ops{..} controllableInputs uncontrollableInputs latches ands safeInd
     let latchMap = Map.fromList latches
     trel <- substitutionArray ops latchMap stab
 
-    mapM ref trel
+    mapM_ ref trel
     ref sr
     let func k v = when (even k) (deref v)
     Map.traverseWithKey func stab
@@ -123,7 +123,7 @@ compile ops@Ops{..} controllableInputs uncontrollableInputs latches ands safeInd
 
 safeCpre :: (Show a, Eq a) => Bool -> Ops s a -> SynthState a -> a -> ST s a
 safeCpre quiet ops@Ops{..} SynthState{..} s = do
-    when (not quiet) $ unsafeIOToST $ print "*"
+    unless quiet $ unsafeIOToST $ print "*"
     scu' <- vectorCompose s trel
 
     scu <- andAbstract cInputCube safeRegion scu'

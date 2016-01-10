@@ -69,5 +69,5 @@ aag = do
     outputs  <- replicateM o output
     andGates <- replicateM a andGate
     symbols  <- many symbol
-    return $ AAG {..}
+    return AAG {..}
 
