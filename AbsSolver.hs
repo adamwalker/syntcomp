@@ -205,6 +205,21 @@ fixedPoint ops@Ops{..} initialState start func = do
             True  -> return $ Just res
             False -> fixedPoint ops initialState res func 
 
+fixedPointNoEarly :: Eq a => Ops s a -> a -> a -> (a -> ST s a) -> ST s (Maybe a)
+fixedPointNoEarly ops@Ops{..} init start func = do
+    res <- f start
+    win <- init `lEq` res
+    case win of
+        False -> deref res >> return Nothing
+        True  -> return $ Just res
+    where 
+    f start = do
+        res <- func start
+        deref start
+        case res == start of
+            True  -> return res
+            False -> f res
+
 pickUntrackedToPromote :: (Eq a) => Ops s a -> a -> ST s (Maybe [Int])
 pickUntrackedToPromote Ops{..} x = do
     if x == bfalse then
@@ -217,8 +232,8 @@ pickUntrackedToPromote Ops{..} x = do
         deref prime
         return $ Just si
 
-solveSafety :: (Eq a, Show a) => Map Int VarInfo -> Bool -> Ops s a -> a -> StateT (SynthStateDynamic a) (ST s) Bool
-solveSafety varInfoMap quiet ops@Ops{..} safeRegion = do
+solveSafety :: (Eq a, Show a) => Map Int VarInfo -> Options -> Ops s a -> a -> StateT (SynthStateDynamic a) (ST s) Bool
+solveSafety varInfoMap options@Options{..} ops@Ops{..} safeRegion = do
     lift $ ref btrue
     ssd  <- get
     func btrue
@@ -226,7 +241,8 @@ solveSafety varInfoMap quiet ops@Ops{..} safeRegion = do
     func mayWin = do
         ssd@SynthStateDynamic{..} <- get
         trel                      <- lift $ substitutionArray ops ssd
-        mayWin'                   <- lift $ fixedPoint ops initialState mayWin $ safeCpre quiet ops ssd trel safeRegion
+        mayWin'                   <- lift $ if noEarly then fixedPointNoEarly ops initialState mayWin (safeCpre quiet ops ssd trel safeRegion) 
+                                                       else fixedPoint        ops initialState mayWin (safeCpre quiet ops ssd trel safeRegion)
         case mayWin' of
             Nothing      -> return False
             Just mayWin' -> do
@@ -271,7 +287,7 @@ doIt o@Options{..} = runEitherT $ do
                 varInfoMap = makeMap cInputs uInputs latches andGates
             (res, state) <- flip runStateT (initialDyn ops) $ do
                 safeRegion <- compile ops  varInfoMap (head outputs)
-                solveSafety varInfoMap quiet ops safeRegion
+                solveSafety varInfoMap o ops safeRegion
             unsafeIOToST $ when (not quiet) $ putStrLn $ "Number of untracked vars at termination: " ++ show (length (Map.keys (revMap state)))
             Cudd.quit m
             return res
@@ -287,6 +303,7 @@ run g = do
 data Options = Options {
     quiet    :: Bool,
     noReord  :: Bool,
+    noEarly  :: Bool,
     filename :: String
 }
 
@@ -295,5 +312,6 @@ main = execParser opts >>= run
     opts   = info (helper <*> parser) (fullDesc <> progDesc "Solve the game specified in INPUT" <> O.header "Simple BDD solver")
     parser = Options <$> flag False True (long "quiet"   <> short 'q' <> help "Be quiet")
                      <*> flag False True (long "noreord" <> short 'n' <> help "Disable reordering")
+                     <*> flag False True (long "noearly" <> short 'e' <> help "Disable early termination")
                      <*> argument O.str (metavar "INPUT")
 
