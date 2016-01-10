@@ -145,10 +145,24 @@ fixedPoint ops@Ops{..} init start func = do
                 True  -> deref res >> return True
                 False -> fixedPoint ops init res func 
 
-solveSafety :: (Eq a, Show a) => Bool -> Ops s a -> SynthState a -> a -> a -> ST s Bool
-solveSafety quiet ops@Ops{..} ss init safeRegion = do
+fixedPointNoEarly :: Eq a => Ops s a -> a -> a -> (a -> ST s a) -> ST s Bool
+fixedPointNoEarly ops@Ops{..} init start func = do
+    res <- f start
+    win <- init `lEq` res
+    deref res
+    return win
+    where 
+    f start = do
+        res <- func start
+        deref start
+        case res == start of
+            True  -> return res
+            False -> f res
+
+solveSafety :: (Eq a, Show a) => Options -> Ops s a -> SynthState a -> a -> a -> ST s Bool
+solveSafety options@Options{..} ops@Ops{..} ss init safeRegion = do
     ref btrue
-    fixedPoint ops init btrue $ safeCpre quiet ops ss 
+    if noEarly then fixedPointNoEarly ops init btrue (safeCpre quiet ops ss) else fixedPoint ops init btrue (safeCpre quiet ops ss)
 
 setupManager :: Options -> DDManager s u -> ST s ()
 setupManager Options{..} m = void $ do
@@ -176,7 +190,7 @@ doIt o@Options{..} = runEitherT $ do
             setupManager o m
             let ops = constructOps m
             ss@SynthState{..} <- compile ops cInputs uInputs latches andGates (head outputs)
-            res <- solveSafety quiet ops ss initState safeRegion
+            res <- solveSafety o ops ss initState safeRegion
             T.mapM (deref ops) ss
             Cudd.quit m
             return res
@@ -192,6 +206,7 @@ run g = do
 data Options = Options {
     quiet    :: Bool,
     noReord  :: Bool,
+    noEarly  :: Bool,
     filename :: String
 }
 
@@ -200,5 +215,6 @@ main = execParser opts >>= run
     opts   = info (helper <*> parser) (fullDesc <> progDesc "Solve the game specified in INPUT" <> O.header "Simple BDD solver")
     parser = Options <$> flag False True (long "quiet"   <> short 'q' <> help "Be quiet")
                      <*> flag False True (long "noreord" <> short 'n' <> help "Disable reordering")
+                     <*> flag False True (long "noearly" <> short 'e' <> help "Disable early termination")
                      <*> argument O.str (metavar "INPUT")
 
