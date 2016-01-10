@@ -303,10 +303,8 @@ compileMonolithic ops@Ops{..} controllableInputs uncontrollableInputs latches an
 
     let subNext s = do
             s' <- varMap s 
-            c  <- bOr (neg trans) s'
+            r  <- liftM neg $ andAbstract nextCube trans (neg s')
             deref s'
-            r  <- bforall nextCube c
-            deref c
             return r
 
     return $ SynthState cInputCube uInputCube (neg sr) subNext initState
