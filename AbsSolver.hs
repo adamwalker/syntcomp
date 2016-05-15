@@ -194,6 +194,13 @@ safeCpre quiet ops@Ops{..} ssd@SynthStateDynamic{..} trel safeRegion s = do
     deref su
     return res
 
+safeCpreUnderApprox :: (Show a, Eq a) => Bool -> Ops s a -> SynthStateDynamic a -> [a] -> a -> a -> ST s a
+safeCpreUnderApprox quiet ops@Ops{..} ssd@SynthStateDynamic{..} trel safeRegion s = do
+    su  <- safeCpre' quiet ops ssd trel safeRegion s
+    res <- bforall untrackedCube su
+    deref su
+    return res
+
 fixedPoint :: Eq a => Ops s a -> a -> a -> (a -> ST s a) -> ST s (Maybe a)
 fixedPoint ops@Ops{..} initialState start func = do
     res <- func start
@@ -246,18 +253,30 @@ solveSafety varInfoMap options@Options{..} ops@Ops{..} safeRegion = do
         case mayWin' of
             Nothing      -> return False
             Just mayWin' -> do
-                toPromote <- lift $ do
-                    winSU     <- safeCpre' quiet ops ssd trel safeRegion mayWin'
-                    mayLose   <- bAnd mayWin' (neg winSU)
-                    deref winSU
-                    toPromote <- pickUntrackedToPromote ops mayLose
-                    deref mayLose
-                    return toPromote
-                case toPromote of
-                    Just xs -> do
-                        promoteUntracked quiet ops varInfoMap xs 
-                        func mayWin'
-                    Nothing -> return True
+
+                let doPromotion = do
+                        toPromote <- lift $ do
+                            winSU     <- safeCpre' quiet ops ssd trel safeRegion mayWin'
+                            mayLose   <- bAnd mayWin' (neg winSU)
+                            deref winSU
+                            toPromote <- pickUntrackedToPromote ops mayLose
+                            deref mayLose
+                            return toPromote
+                        case toPromote of
+                            Just xs -> do
+                                promoteUntracked quiet ops varInfoMap xs 
+                                func mayWin'
+                            Nothing -> return True
+
+                if computeWinUnderApprox then do
+                    lift $ ref mayWin'
+                    mustWin <- lift $ if noEarlyUnder then fixedPointNoEarly ops initialState mayWin' (safeCpreUnderApprox quiet ops ssd trel safeRegion)
+                                                      else fixedPoint        ops initialState mayWin' (safeCpreUnderApprox quiet ops ssd trel safeRegion)
+                    case mustWin of 
+                        Nothing  -> doPromotion
+                        Just win -> lift $ deref win >> return True
+
+                else doPromotion
 
 setupManager :: Options -> DDManager s u -> ST s ()
 setupManager Options{..} m = void $ do
@@ -301,17 +320,21 @@ run g = do
         Right False -> putStrLn "UNREALIZABLE"
 
 data Options = Options {
-    quiet    :: Bool,
-    noReord  :: Bool,
-    noEarly  :: Bool,
-    filename :: String
+    quiet                 :: Bool,
+    noReord               :: Bool,
+    noEarly               :: Bool,
+    computeWinUnderApprox :: Bool,
+    noEarlyUnder          :: Bool,
+    filename              :: String
 }
 
 main = execParser opts >>= run
     where
     opts   = info (helper <*> parser) (fullDesc <> progDesc "Solve the game specified in INPUT" <> O.header "Simple BDD solver")
-    parser = Options <$> flag False True (long "quiet"   <> short 'q' <> help "Be quiet")
-                     <*> flag False True (long "noreord" <> short 'n' <> help "Disable reordering")
-                     <*> flag False True (long "noearly" <> short 'e' <> help "Disable early termination")
+    parser = Options <$> flag False True (long "quiet"       <> short 'q' <> help "Be quiet")
+                     <*> flag False True (long "noreord"     <> short 'n' <> help "Disable reordering")
+                     <*> flag False True (long "noearly"     <> short 'e' <> help "Disable early termination")
+                     <*> flag False True (long "underapprox" <> short 'u' <> help "Compute an under approximation of the winning set and terminate early with WIN if it still contains the initial set")
+                     <*> flag False True (long "earlyunder"  <> short 't' <> help "Terminate early when computing the under approx winning set")
                      <*> argument O.str (metavar "INPUT")
 
