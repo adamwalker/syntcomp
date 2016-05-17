@@ -1,4 +1,9 @@
 {-# LANGUAGE OverloadedStrings, RecordWildCards, DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
+module SimpleBDDSolver.AbsSolver
+    ( run
+    , doIt
+    , Options(..)
+    ) where
 
 import Control.Applicative
 import qualified  Data.Text.IO as T
@@ -21,7 +26,6 @@ import Control.Monad.Trans
 import Control.Arrow
 import Control.Monad.Trans.State
 
-import Options.Applicative as O
 import Safe
 import Data.Attoparsec.Text as P
 
@@ -29,8 +33,8 @@ import qualified Cudd.Imperative as Cudd
 import Cudd.Imperative (DDManager, DDNode)
 import Cudd.Reorder
 
-import AAG
-import BDD
+import SimpleBDDSolver.AAG
+import SimpleBDDSolver.BDD
 
 --Compiling the AIG
 data VarInfo 
@@ -327,14 +331,3 @@ data Options = Options {
     noEarlyUnder          :: Bool,
     filename              :: String
 }
-
-main = execParser opts >>= run
-    where
-    opts   = info (helper <*> parser) (fullDesc <> progDesc "Solve the game specified in INPUT" <> O.header "Simple BDD solver")
-    parser = Options <$> flag False True (long "quiet"       <> short 'q' <> help "Be quiet")
-                     <*> flag False True (long "noreord"     <> short 'n' <> help "Disable reordering")
-                     <*> flag False True (long "noearly"     <> short 'e' <> help "Disable early termination")
-                     <*> flag False True (long "underapprox" <> short 'u' <> help "Compute an under approximation of the winning set and terminate early with WIN if it still contains the initial set")
-                     <*> flag False True (long "earlyunder"  <> short 't' <> help "Terminate early when computing the under approx winning set")
-                     <*> argument O.str (metavar "INPUT")
-
