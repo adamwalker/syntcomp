@@ -1,6 +1,6 @@
 {-# LANGUAGE RecordWildCards, OverloadedStrings #-}
 
-module AAG where
+module SimpleBDDSolver.AAG where
 
 import Control.Monad
 import Control.Applicative

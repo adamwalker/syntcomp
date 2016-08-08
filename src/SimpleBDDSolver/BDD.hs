@@ -1,5 +1,5 @@
 {-# LANGUAGE RecordWildCards #-}
-module BDD where
+module SimpleBDDSolver.BDD where
 
 import Control.Monad.ST
 import Control.Monad.ST.Unsafe
