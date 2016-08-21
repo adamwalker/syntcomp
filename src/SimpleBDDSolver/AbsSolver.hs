@@ -257,30 +257,30 @@ solveSafety varInfoMap options@Options{..} ops@Ops{..} safeRegion = do
         case mayWin' of
             Nothing      -> return False
             Just mayWin' -> do
+                toPromote <- lift $ do
+                    winSU     <- safeCpre' quiet ops ssd trel safeRegion mayWin'
+                    mayLose   <- bAnd mayWin' (neg winSU)
+                    deref winSU
+                    toPromote <- pickUntrackedToPromote ops mayLose
+                    deref mayLose
+                    return toPromote
+                case toPromote of
+                    Just xs -> do
+                        if computeWinUnderApprox then do
+                            lift $ ref mayWin'
+                            mustWin <- lift $ if noEarlyUnder then fixedPointNoEarly ops initialState mayWin' (safeCpreUnderApprox quiet ops ssd trel safeRegion)
+                                                              else fixedPoint        ops initialState mayWin' (safeCpreUnderApprox quiet ops ssd trel safeRegion)
+                            case mustWin of 
+                                Nothing  -> do
+                                    promoteUntracked quiet ops varInfoMap xs 
+                                    func mayWin'
+                                Just win -> lift $ deref win >> return True
 
-                let doPromotion = do
-                        toPromote <- lift $ do
-                            winSU     <- safeCpre' quiet ops ssd trel safeRegion mayWin'
-                            mayLose   <- bAnd mayWin' (neg winSU)
-                            deref winSU
-                            toPromote <- pickUntrackedToPromote ops mayLose
-                            deref mayLose
-                            return toPromote
-                        case toPromote of
-                            Just xs -> do
-                                promoteUntracked quiet ops varInfoMap xs 
-                                func mayWin'
-                            Nothing -> return True
+                        else do
+                            promoteUntracked quiet ops varInfoMap xs 
+                            func mayWin'
 
-                if computeWinUnderApprox then do
-                    lift $ ref mayWin'
-                    mustWin <- lift $ if noEarlyUnder then fixedPointNoEarly ops initialState mayWin' (safeCpreUnderApprox quiet ops ssd trel safeRegion)
-                                                      else fixedPoint        ops initialState mayWin' (safeCpreUnderApprox quiet ops ssd trel safeRegion)
-                    case mustWin of 
-                        Nothing  -> doPromotion
-                        Just win -> lift $ deref win >> return True
-
-                else doPromotion
+                    Nothing -> return True
 
 setupManager :: Options -> DDManager s u -> ST s ()
 setupManager Options{..} m = void $ do
