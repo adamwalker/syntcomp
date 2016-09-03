@@ -19,6 +19,7 @@ import qualified Data.Traversable as T
 import Control.Monad.Trans.Either
 import Control.Monad.Trans
 import Control.Arrow
+import Data.Monoid
 
 import Options.Applicative as O
 import Safe
@@ -101,7 +102,7 @@ data Ops s v m a = Ops {
     constructMap  :: [(Int, a)] -> ST s m,
     vectorCompose :: a -> m -> ST s a,
     computeVarSet :: [Int] -> ST s v,
-    computeCube   :: [Int] -> [Bool] -> ST s a,
+    computeCube   :: v -> [Bool] -> ST s a,
     ithVar        :: Int -> ST s a,
     bforall       :: v -> a -> ST s a,
     bexists       :: v -> a -> ST s a,
@@ -138,14 +139,21 @@ constructOps = Ops {..}
         S.gcEnable
         return res
         where
-        func m (v, x) = S.mapAdd m (fromIntegral v) x
+        func m (v, x) = do
+            res <- S.mapAdd m (fromIntegral v) x
+            S.refMap res
+            S.derefMap m
+            return res
     vectorCompose x m = do
         res <- S.compose x m
         ref res
         return res
-    computeVarSet is  = S.setFromArray (map fromIntegral is)
+    computeVarSet is  = do
+        res <- S.setFromArray (map fromIntegral is)
+        ref res
+        return res
     computeCube v p   = do
-        res <- S.cube (map fromIntegral v) (map func p)
+        res <- S.cube v (map func p)
         ref res
         return res
         where
@@ -172,11 +180,6 @@ constructOps = Ops {..}
         res <- bexists v xy
         deref xy
         return res
-        {-
-        res <- S.relProd x y c
-        ref res
-        return res
-        -}
 
 bddSynopsis :: (Show a, Eq a) => Ops s v m a -> a -> ST s ()
 bddSynopsis Ops{..} x 
@@ -231,6 +234,7 @@ compile ops@Ops{..} controllableInputs uncontrollableInputs latches ands safeInd
     --create an entry for each controllable input 
     let nextIdx       = length controllableInputs
         cInputIndices = [0 .. nextIdx - 1]
+
     cInputVars <- mapM ithVar cInputIndices
     cInputCube <- computeVarSet cInputIndices
 
@@ -244,6 +248,7 @@ compile ops@Ops{..} controllableInputs uncontrollableInputs latches ands safeInd
     let nextIdx3     = nextIdx2 + length latches
         latchIndices = [nextIdx2 .. nextIdx3 - 1]
     latchVars  <- mapM ithVar latchIndices
+    latchCube  <- computeVarSet latchIndices
 
     ref btrue
     ref bfalse
@@ -261,9 +266,9 @@ compile ops@Ops{..} controllableInputs uncontrollableInputs latches ands safeInd
 
     --get the safety condition
     let sr   = fromJustNote "compile" $ Map.lookup safeIndex stab
-    
+
     --construct the initial state
-    initState <- computeCube latchIndices (replicate (length latchVars) False)
+    initState <- computeCube latchCube (replicate (length latchVars) False)
 
     --construct the transition relation
     let latchMap = Map.fromList latches
@@ -320,15 +325,21 @@ doIt :: Options -> IO (Either String Bool)
 doIt (Options {..}) = runEitherT $ do
     contents    <- lift $ T.readFile filename
     aag@AAG{..} <- hoistEither $ parseOnly aag contents
-    lift $ stToIO $ do
-        let (cInputs, uInputs) = categorizeInputs symbols inputs
+
+    let (cInputs, uInputs) = categorizeInputs symbols inputs
+
+    lift $ do
         S.laceInit threads 1000000
         S.laceStartup
-        S.sylvanInit 26 24 4
+        S.sylvanInitPackage (1 `shiftL` 21) (1 `shiftL` 25) (1 `shiftL` 21) (1 `shiftL` 25)
+        S.sylvanInit 
+
+    lift $ stToIO $ do
         setupManager quiet 
         S.gcEnable
         let ops = constructOps 
         ss@SynthState{..} <- compile ops cInputs uInputs latches andGates (head outputs)
+
         res <- solveSafety quiet ops ss initState safeRegion
         T.mapM (deref ops) ss
         return res
@@ -351,6 +362,6 @@ main = execParser opts >>= run
     where
     opts   = info (helper <*> parser) (fullDesc <> progDesc "Solve the game specified in INPUT" <> O.header "Simple BDD solver")
     parser = Options <$> flag False True (long "quiet" <> short 'q' <> help "Be quiet")
-                     <*> O.option (long "threads" <> short 'n' <> metavar "N" <> help "Number of threads" <> value 4)
+                     <*> O.option auto (long "threads" <> short 'n' <> metavar "N" <> help "Number of threads" <> value 4)
                      <*> argument O.str (metavar "INPUT")
 
