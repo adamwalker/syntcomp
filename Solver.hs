@@ -176,10 +176,9 @@ constructOps = Ops {..}
     btrue             = S.sylvanTrue
     bfalse            = S.sylvanFalse
     andAbstract v x y = do
-        xy  <- x `bAnd` y
-        res <- bexists v xy
-        deref xy
-        return res
+        xy <- S.andExists x y v
+        ref xy
+        return xy
 
 bddSynopsis :: (Show a, Eq a) => Ops s v m a -> a -> ST s ()
 bddSynopsis Ops{..} x 
