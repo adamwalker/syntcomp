@@ -39,6 +39,40 @@ import SimpleBDDSolver.BDD
 
 {-# ANN module ("HLint: ignore Use if" :: String) #-}
 
+--Synthesis state
+data SynthStateDynamic a = SynthStateDynamic {
+    --Map from AIGER indices to bdds that have been compiled already
+    theMap        :: Map Int a,
+    --Map from untracked BDD indices to update function AIGER indices
+    revMap        :: Map Int Int,
+    --Map from state BDD indices to update functions
+    stateMap      :: Map Int a,
+    untrackedCube :: a,
+    cInputCube    :: a,
+    uInputCube    :: a,
+    initialState  :: a
+} deriving (Functor, Foldable, Traversable)
+
+initialDyn :: Ops s a -> SynthStateDynamic a
+initialDyn Ops{..} = SynthStateDynamic {..}
+    where
+    theMap        = Map.fromList [(0, bfalse), (1, btrue)]
+    revMap        = Map.empty
+    stateMap      = Map.empty
+    untrackedCube = btrue
+    cInputCube    = btrue
+    uInputCube    = btrue
+    initialState  = btrue
+
+dumpState :: StateT (SynthStateDynamic a) (ST s) ()
+dumpState = do
+    SynthStateDynamic{..} <- get
+    lift $ unsafeIOToST $ do
+        putStrLn "revMap"
+        print $ Map.keys revMap 
+        putStrLn "stateMap"
+        print $ Map.keys stateMap
+
 --Compiling the AIG
 data VarInfo 
     = CInput
@@ -129,40 +163,6 @@ compile ops@Ops{..} varInfoMap idx = do
                     let theMap' = Map.insert (2 * thisIdx) res (Map.insert (2 * thisIdx + 1) (neg res) theMap)
                     put ss{theMap = theMap'}
                     return $ iff (even idx) res (neg res)
-
---Synthesis
-data SynthStateDynamic a = SynthStateDynamic {
-    --Map from AIGER indices to bdds that have been compiled already
-    theMap        :: Map Int a,
-    --Map from untracked BDD indices to update function AIGER indices
-    revMap        :: Map Int Int,
-    --Map from state BDD indices to update functions
-    stateMap      :: Map Int a,
-    untrackedCube :: a,
-    cInputCube    :: a,
-    uInputCube    :: a,
-    initialState  :: a
-} deriving (Functor, Foldable, Traversable)
-
-initialDyn :: Ops s a -> SynthStateDynamic a
-initialDyn Ops{..} = SynthStateDynamic {..}
-    where
-    theMap        = Map.fromList [(0, bfalse), (1, btrue)]
-    revMap        = Map.empty
-    stateMap      = Map.empty
-    untrackedCube = btrue
-    cInputCube    = btrue
-    uInputCube    = btrue
-    initialState  = btrue
-
-dumpState :: StateT (SynthStateDynamic a) (ST s) ()
-dumpState = do
-    SynthStateDynamic{..} <- get
-    lift $ unsafeIOToST $ do
-        putStrLn "revMap"
-        print $ Map.keys revMap 
-        putStrLn "stateMap"
-        print $ Map.keys stateMap
 
 substitutionArray :: Ops s a -> SynthStateDynamic a -> ST s [a]
 substitutionArray Ops{..} SynthStateDynamic{..} = do
