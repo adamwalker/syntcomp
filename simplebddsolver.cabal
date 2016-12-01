@@ -22,7 +22,7 @@ library
   other-modules:       SimpleBDDSolver.AAG
                      , SimpleBDDSolver.BDD
   other-extensions:    OverloadedStrings, RecordWildCards, DeriveFunctor, DeriveFoldable, DeriveTraversable
-  build-depends:       base >=4.7 && <4.9
+  build-depends:       base >=4.7 && <5
                      , text >=1.1 && <1.3
                      , containers >=0.5 && <0.6
                      , tuple >=0.2 && <0.4
@@ -37,7 +37,7 @@ library
 
 executable solver
   main-is:             MainSolver.hs
-  build-depends:       base >=4.7 && <4.9
+  build-depends:       base >=4.7 && <5
                      , simplebddsolver
                      , optparse-applicative >=0.8 && <0.13
   default-language:    Haskell2010
@@ -45,7 +45,7 @@ executable solver
 
 executable absSolver
   main-is:             MainAbsSolver.hs
-  build-depends:       base >=4.7 && <4.9
+  build-depends:       base >=4.7 && <5
                      , simplebddsolver
                      , optparse-applicative >=0.8 && <0.13
   default-language:    Haskell2010
