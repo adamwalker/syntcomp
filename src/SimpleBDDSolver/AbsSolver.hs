@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings, RecordWildCards, DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
+
 module SimpleBDDSolver.AbsSolver
     ( run
     , doIt
@@ -36,6 +37,8 @@ import Cudd.Reorder
 import SimpleBDDSolver.AAG
 import SimpleBDDSolver.BDD
 
+{-# ANN module ("HLint: ignore Use if" :: String) #-}
+
 --Compiling the AIG
 data VarInfo 
     = CInput
@@ -49,8 +52,8 @@ promoteUntracked quiet ops@Ops{..} varInfoMap bddIndices' = do
     ss@SynthStateDynamic{..} <- get
 
     --Update the state map
-    let bddIndices = filter (flip Map.member revMap) bddIndices'
-    when (not quiet) $ lift $ unsafeIOToST $ putStrLn $ "Promoting: " ++ show bddIndices
+    let bddIndices = filter (`Map.member` revMap) bddIndices'
+    unless quiet $ lift $ unsafeIOToST $ putStrLn $ "Promoting: " ++ show bddIndices
     let aigIndices =  map (fromJustNote "promoteUntracked" . flip Map.lookup revMap) bddIndices
     res <- mapM (compile ops  varInfoMap) aigIndices 
     ss@SynthStateDynamic{..} <- get
@@ -87,18 +90,18 @@ compile ops@Ops{..} varInfoMap idx = do
     let thisIdx              =  idx `quot` 2
     case Map.lookup idx theMap of
         Just x  -> return x
-        Nothing -> do
+        Nothing -> 
             case Map.lookup (2 * thisIdx) varInfoMap of
-                Nothing          -> lift (unsafeIOToST (putStrLn "error")) >> (return $ error $ "doAndGates: index does not exist: " ++ show (2 * thisIdx))
+                Nothing          -> lift (unsafeIOToST (putStrLn "error")) >> return (error $ "doAndGates: index does not exist: " ++ show (2 * thisIdx))
                 Just CInput      -> do
-                    res         <- lift $ newVar
+                    res         <- lift newVar
                     cInputCube' <- lift $ bAnd cInputCube res
                     lift $ deref cInputCube
                     let theMap' =  Map.insert (2 * thisIdx) res (Map.insert (2 * thisIdx + 1) (neg res) theMap)
                     put ss{theMap = theMap', cInputCube = cInputCube'}
                     return $ iff (even idx) res (neg res)
                 Just UInput      -> do
-                    res         <- lift $ newVar
+                    res         <- lift newVar
                     uInputCube' <- lift $ bAnd uInputCube res
                     lift $ deref uInputCube
                     let theMap' =  Map.insert (2 * thisIdx) res (Map.insert (2 * thisIdx + 1) (neg res) theMap)
@@ -175,13 +178,13 @@ makeMap controllableInputs uncontrollableInputs latches ands = Map.unions [cInpu
     where
     cInputMap = Map.fromList $ zip controllableInputs   (repeat CInput)
     uInputMap = Map.fromList $ zip uncontrollableInputs (repeat UInput)
-    latchMap  = Map.fromList $ map (id *** Latch) latches
+    latchMap  = Map.fromList $ map (second Latch) latches
     andMap    = Map.fromList $ map (\(x, y, z) -> (x, And y z)) ands
 
 --Leaves untracked vars in place
 safeCpre' :: (Show a, Eq a) => Bool -> Ops s a -> SynthStateDynamic a -> [a] -> a -> a -> ST s a
 safeCpre' quiet ops@Ops{..} ssd@SynthStateDynamic{..} trel safeRegion s = do
-    when (not quiet) $ unsafeIOToST $ print "*"
+    unless quiet $ unsafeIOToST $ print "*"
     scu' <- vectorCompose s trel
 
     scu <- andAbstract cInputCube (neg safeRegion) scu'
@@ -212,7 +215,7 @@ fixedPoint ops@Ops{..} initialState start func = do
     win <- initialState `lEq` res
     case win of
         False -> deref res >> return Nothing
-        True  -> case (res == start) of
+        True  -> case res == start of
             True  -> return $ Just res
             False -> fixedPoint ops initialState res func 
 
@@ -232,7 +235,7 @@ fixedPointNoEarly ops@Ops{..} init start func = do
             False -> f res
 
 pickUntrackedToPromote :: (Eq a) => Ops s a -> a -> ST s (Maybe [Int])
-pickUntrackedToPromote Ops{..} x = do
+pickUntrackedToPromote Ops{..} x = 
     if x == bfalse then
         return Nothing
     else do
@@ -265,7 +268,7 @@ solveSafety varInfoMap options@Options{..} ops@Ops{..} safeRegion = do
                     deref mayLose
                     return toPromote
                 case toPromote of
-                    Just xs -> do
+                    Just xs -> 
                         if computeWinUnderApprox then do
                             lift $ ref mayWin'
                             mustWin <- lift $ if noEarlyUnder then fixedPointNoEarly ops initialState mayWin' (safeCpreUnderApprox quiet ops ssd trel safeRegion)
@@ -311,7 +314,7 @@ doIt o@Options{..} = runEitherT $ do
             (res, state) <- flip runStateT (initialDyn ops) $ do
                 safeRegion <- compile ops  varInfoMap (head outputs)
                 solveSafety varInfoMap o ops safeRegion
-            unsafeIOToST $ when (not quiet) $ putStrLn $ "Number of untracked vars at termination: " ++ show (length (Map.keys (revMap state)))
+            unsafeIOToST $ unless quiet $ putStrLn $ "Number of untracked vars at termination: " ++ show (length (Map.keys (revMap state)))
             Cudd.quit m
             return res
 
