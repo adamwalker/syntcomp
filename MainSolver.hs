@@ -1,3 +1,5 @@
+import Data.Monoid 
+
 import Options.Applicative as O
 import SimpleBDDSolver.Solver
 
