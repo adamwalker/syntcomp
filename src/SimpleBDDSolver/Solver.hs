@@ -20,8 +20,9 @@ import System.CPUTime
 import Data.Foldable (Foldable)
 import Data.Traversable (Traversable)
 import qualified Data.Traversable as T
-import Control.Monad.Trans.Either
+import Control.Monad.Trans.Except
 import Control.Monad.Trans
+import Control.Error.Util
 
 import Data.Attoparsec.Text as P
 
@@ -184,7 +185,7 @@ categorizeInputs symbols inputs = (cont, inputs \\ cont)
     isControllable _         = False
 
 doIt :: Options -> IO (Either String Bool)
-doIt o@Options{..} = runEitherT $ do
+doIt o@Options{..} = runExceptT $ do
     contents    <- lift $ T.readFile filename
     aag@AAG{..} <- hoistEither $ parseOnly aag contents
     lift $ do
