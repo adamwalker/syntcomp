@@ -50,3 +50,13 @@ executable absSolver
                      , optparse-applicative >=0.8 && <0.15
   default-language:    Haskell2010
   ghc-options:         -O2
+
+executable portfolioSolver
+  main-is:             MainPortfolioSolver.hs
+  build-depends:       base >=4.7 && <5
+                     , simplebddsolver
+                     , optparse-applicative >=0.8 && <0.15
+                     , async >=2.1 && <3
+  default-language:    Haskell2010
+  ghc-options:         -O2 -threaded -rtsopts -with-rtsopts=-N
+

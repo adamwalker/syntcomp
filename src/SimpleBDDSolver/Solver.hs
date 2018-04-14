@@ -1,6 +1,7 @@
 {-# LANGUAGE OverloadedStrings, RecordWildCards, DeriveFunctor, DeriveFoldable, DeriveTraversable #-}
 module SimpleBDDSolver.Solver
     ( run
+    , doIt
     , Options(..)
     ) where
 
